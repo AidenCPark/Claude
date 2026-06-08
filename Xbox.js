@@ -325,7 +325,7 @@ async function buildWidget() {
   label.font = Font.semiboldSystemFont(9);
   w.addSpacer(6);
 
-  const list = (data.recent || []).slice(0, isLarge ? 7 : MAX_ACHIEVEMENTS);
+  const list = (data.recent || []).slice(0, isLarge ? 5 : MAX_ACHIEVEMENTS);
   if (list.length === 0) {
     const none = w.addText("No recent achievements found.");
     none.textColor = COLORS.dim;
@@ -333,8 +333,10 @@ async function buildWidget() {
   } else {
     const icons = await Promise.all(list.map(a => loadIcon(a.iconUrl)));
     for (let i = 0; i < list.length; i++) {
-      addAchievementRow(w, list[i], icons[i]);
-      if (i < list.length - 1) w.addSpacer(6);
+      addAchievementRow(w, list[i], icons[i], isLarge);
+      // Large now shows 5 rows instead of 7, so each row (and its
+      // gap) is scaled up by 7/5 to fill the same space.
+      if (i < list.length - 1) w.addSpacer(isLarge ? 8 : 6);
     }
   }
 
@@ -355,29 +357,37 @@ function addStat(parent, value, caption, color, isSmall) {
   c.font = Font.systemFont(isSmall ? 9 : 10);
 }
 
-function addAchievementRow(w, ach, icon) {
+function addAchievementRow(w, ach, icon, isLarge) {
+  // Large fits 5 rows where it used to fit 7, so scale the row up by
+  // 7/5 = 1.4x. Medium (and the fallback) keep the original sizes.
+  const iconSize = isLarge ? 39 : 28;
+  const corner = isLarge ? 7 : 5;
+  const gap = isLarge ? 11 : 8;
+  const titleSize = isLarge ? 17 : 12;
+  const subSize = isLarge ? 14 : 10;
+
   const row = w.addStack();
   row.centerAlignContent();
   if (icon) {
     const img = row.addImage(icon);
-    img.imageSize = new Size(28, 28);
-    img.cornerRadius = 5;
+    img.imageSize = new Size(iconSize, iconSize);
+    img.cornerRadius = corner;
   } else {
     const ph = row.addText("🎮");
-    ph.font = Font.systemFont(22);
+    ph.font = Font.systemFont(isLarge ? 31 : 22);
   }
-  row.addSpacer(8);
+  row.addSpacer(gap);
 
   const col = row.addStack();
   col.layoutVertically();
   const gsLabel = ach.gamerscore != null ? ` (${ach.gamerscore}G)` : "";
   const t = col.addText(`${ach.title}${gsLabel}`);
   t.textColor = COLORS.text;
-  t.font = Font.semiboldSystemFont(12);
+  t.font = Font.semiboldSystemFont(titleSize);
   t.lineLimit = 1;
   const sub = col.addText(`${ach.game} · ${fmtUnlock(ach.unlocked)}`);
   sub.textColor = COLORS.dim;
-  sub.font = Font.systemFont(10);
+  sub.font = Font.systemFont(subSize);
   sub.lineLimit = 1;
   row.addSpacer();
 }
