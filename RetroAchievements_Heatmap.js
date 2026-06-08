@@ -71,27 +71,44 @@ async function apiGet(endpoint, extraParams = {}) {
 async function getDailyPoints() {
   const now = new Date();
   const year = now.getFullYear();
+  const nowSec = Math.floor(now.getTime() / 1000);
 
-  // API_GetAchievementsEarnedBetween takes unix-second timestamps and
-  // returns a flat array of unlocks ({ Date, Points, ... }) for the
-  // window — no 500-result cap like the recent-achievements endpoint.
-  const from = Math.floor(new Date(year, 0, 1, 0, 0, 0).getTime() / 1000);
-  const to = Math.floor(now.getTime() / 1000);
-  const resp = await apiGet("API_GetAchievementsEarnedBetween.php", { f: from, t: to });
-  const unlocks = Array.isArray(resp) ? resp : [];
+  // API_GetAchievementsEarnedBetween takes unix-second timestamps. A
+  // big window silently caps its results (keeping the OLDEST and
+  // dropping the NEWEST unlocks), which would blank out recent months.
+  // So query one window PER MONTH and merge — each call stays well
+  // under the cap. The 12 requests run in parallel.
+  const tasks = [];
+  for (let m = 0; m < 12; m++) {
+    const f = Math.floor(new Date(year, m, 1, 0, 0, 0).getTime() / 1000);
+    if (f > nowSec) break; // month hasn't started yet
+    // Inclusive end: last second of the month (or now, whichever first).
+    const monthEnd = Math.floor((new Date(year, m + 1, 1, 0, 0, 0).getTime() - 1000) / 1000);
+    const t = Math.min(monthEnd, nowSec);
+    tasks.push(apiGet("API_GetAchievementsEarnedBetween.php", { f, t }));
+  }
+
+  const results = await Promise.allSettled(tasks);
+  // Only treat it as a failure (-> fall back to cache) if EVERY call failed.
+  if (results.length && results.every(r => r.status === "rejected")) {
+    throw new Error("All RetroAchievements requests failed");
+  }
 
   // grid[month][day-1] = points earned that day this year.
   const grid = Array.from({ length: 12 }, () => new Array(31).fill(0));
   let yearPts = 0;
 
-  for (const a of unlocks) {
-    const points = parseInt(a.Points) || 0;
-    if (points <= 0 || !a.Date) continue;
-    // RA timestamps are UTC ("2026-05-18 05:14:11"); render in local time.
-    const d = new Date(a.Date.replace(" ", "T") + "Z");
-    if (isNaN(d.getTime()) || d.getFullYear() !== year) continue;
-    grid[d.getMonth()][d.getDate() - 1] += points;
-    yearPts += points;
+  for (const r of results) {
+    if (r.status !== "fulfilled" || !Array.isArray(r.value)) continue;
+    for (const a of r.value) {
+      const points = parseInt(a.Points) || 0;
+      if (points <= 0 || !a.Date) continue;
+      // RA timestamps are UTC ("2026-05-18 05:14:11"); render in local time.
+      const d = new Date(a.Date.replace(" ", "T") + "Z");
+      if (isNaN(d.getTime()) || d.getFullYear() !== year) continue;
+      grid[d.getMonth()][d.getDate() - 1] += points;
+      yearPts += points;
+    }
   }
 
   // Find the single best day (most points) for color scaling + header.
