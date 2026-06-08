@@ -281,7 +281,7 @@ function addAchievementRow(w, ach, badge, isLarge) {
   const corner = isLarge ? 6 : 5;
   const gap = isLarge ? 9 : 8;
   const titleSize = isLarge ? 14 : 12;
-  const subSize = isLarge ? 12 : 10;
+  const subSize = isLarge ? 11 : 10;
 
   const row = w.addStack();
   row.centerAlignContent();
