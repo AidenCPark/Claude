@@ -228,6 +228,14 @@ function fmt(date, pattern) {
   return df.string(date);
 }
 
+// Open-Meteo daily dates are local "YYYY-MM-DD". A bare date string parses
+// as UTC midnight, which rolls the weekday back a day in western-hemisphere
+// timezones — so append a time to force LOCAL parsing.
+function parseLocalDate(s) {
+  if (!s) return new Date(NaN);
+  return s.length <= 10 ? new Date(s + "T00:00:00") : new Date(s);
+}
+
 // Index of the hourly slot for the current hour (or the next available).
 function hourStartIndex(times) {
   const start = new Date(); start.setMinutes(0, 0, 0);
@@ -268,31 +276,33 @@ function sectionLabel(w, text) {
   l.font = Font.semiboldSystemFont(9);
 }
 
-// A compact "icon + value + caption" stat chip.
+// A compact stat chip: icon on top, value, then caption — all centered,
+// so the value gets the chip's full width and never truncates.
 function addChip(parent, symbol, color, value, caption) {
   const chip = parent.addStack();
   chip.layoutVertically();
   chip.centerAlignContent();
   chip.backgroundColor = COLORS.chip;
   chip.cornerRadius = 9;
-  chip.setPadding(6, 6, 6, 6);
+  chip.setPadding(7, 7, 7, 7);
 
-  const top = chip.addStack();
-  top.centerAlignContent();
-  top.addSpacer();
-  addSymbol(top, symbol, 11, color);
-  top.addSpacer(3);
-  const v = top.addText(value);
+  addSymbol(chip, symbol, 15, color);
+  chip.addSpacer(3);
+
+  const v = chip.addText(value);
   v.textColor = COLORS.text;
-  v.font = Font.boldSystemFont(13);
+  v.font = Font.boldSystemFont(15);
   v.lineLimit = 1;
   v.minimumScaleFactor = 0.6;
-  top.addSpacer();
+  v.centerAlignText();
+
+  chip.addSpacer(1);
 
   const c = chip.addText(caption);
   c.textColor = COLORS.dim;
-  c.font = Font.systemFont(8.5);
+  c.font = Font.systemFont(9);
   c.lineLimit = 1;
+  c.centerAlignText();
 }
 
 // ============================================================
@@ -376,19 +386,17 @@ async function buildWidget() {
   // ---------- Current stat chips ----------
   const chips = w.addStack();
   chips.layoutHorizontally();
-  chips.spacing = 6;
   const todayPop = (daily.precipitation_probability_max || [])[0];
   const chipDefs = [
     ["thermometer", COLORS.sun, `${r(cur.apparent_temperature)}${deg()}`, "Feels"],
     ["humidity.fill", COLORS.rain, `${r(cur.relative_humidity_2m)}%`, "Humidity"],
-    ["wind", COLORS.text, `${compass(cur.wind_direction_10m)} ${r(cur.wind_speed_10m)}`, UNITS.windLabel],
-    ["sun.max.fill", COLORS.sun, `${r(cur.uv_index)}`, uvRisk(cur.uv_index)],
+    ["wind", COLORS.text, `${compass(cur.wind_direction_10m)} ${r(cur.wind_speed_10m)}`, "Wind"],
+    ["sun.max.fill", COLORS.sun, `${r(cur.uv_index)}`, "UV"],
     ["drop.fill", COLORS.accent, `${todayPop == null ? "—" : r(todayPop) + "%"}`, "Rain"],
   ];
-  for (const [sym, col, val, cap] of chipDefs) {
-    const cell = chips.addStack();
-    cell.layoutVertically();
-    addChip(cell, sym, col, val, cap);
+  for (let k = 0; k < chipDefs.length; k++) {
+    addChip(chips, ...chipDefs[k]);
+    if (k < chipDefs.length - 1) chips.addSpacer();
   }
 
   w.addSpacer(10);
@@ -436,19 +444,19 @@ async function buildWidget() {
   w.addSpacer(8);
 
   // ---------- Daily forecast (6 days) ----------
-  sectionLabel(w, `${(daily.time || []).length}-DAY FORECAST`);
+  const dTimes = daily.time || [];
+  const DAYS = Math.min(7, dTimes.length);
+  sectionLabel(w, `${DAYS}-DAY FORECAST`);
   w.addSpacer(5);
   const dRow = w.addStack();
   dRow.layoutHorizontally();
-  const dTimes = daily.time || [];
-  const DAYS = Math.min(6, dTimes.length);
   for (let i = 0; i < DAYS; i++) {
     const code = (daily.weather_code || [])[i];
     const col = dRow.addStack();
     col.layoutVertically();
     col.centerAlignContent();
 
-    const day = col.addText(i === 0 ? "Today" : fmt(new Date(dTimes[i]), "EEE"));
+    const day = col.addText(i === 0 ? "Today" : fmt(parseLocalDate(dTimes[i]), "EEE"));
     day.textColor = COLORS.dim;
     day.font = Font.systemFont(10);
     day.centerAlignText();
