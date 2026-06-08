@@ -321,6 +321,6 @@ if (config.runsInWidget) {
   Script.setWidget(widget);
 } else {
   // When run inside the Scriptable app, preview at medium size.
-  await widget.presentMedium();
+  await widget.presentLarge();
 }
 Script.complete();
