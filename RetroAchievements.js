@@ -238,7 +238,7 @@ async function buildWidget() {
   label.font = Font.semiboldSystemFont(9);
   w.addSpacer(6);
 
-  const list = Array.isArray(recent) ? recent.slice(0, isLarge ? 5 : MAX_ACHIEVEMENTS) : [];
+  const list = Array.isArray(recent) ? recent.slice(0, isLarge ? 6 : MAX_ACHIEVEMENTS) : [];
 
   if (list.length === 0) {
     const none = w.addText("No recent achievements found.");
@@ -249,9 +249,9 @@ async function buildWidget() {
     const badges = await Promise.all(list.map(a => loadBadge(a.BadgeName)));
     for (let i = 0; i < list.length; i++) {
       addAchievementRow(w, list[i], badges[i], isLarge);
-      // Large now shows 5 rows instead of 7, so each row (and its
-      // gap) is scaled up by 7/5 to fill the same space.
-      if (i < list.length - 1) w.addSpacer(isLarge ? 8 : 6);
+      // Large now shows 6 rows instead of 7, so each row (and its
+      // gap) is scaled up by 7/6 to fill the same space.
+      if (i < list.length - 1) w.addSpacer(isLarge ? 7 : 6);
     }
   }
 
@@ -275,13 +275,13 @@ function addStat(parent, value, caption, color, isSmall) {
 }
 
 function addAchievementRow(w, ach, badge, isLarge) {
-  // Large fits 5 rows where it used to fit 7, so scale the row up by
-  // 7/5 = 1.4x. Medium (and the fallback) keep the original sizes.
-  const iconSize = isLarge ? 39 : 28;
-  const corner = isLarge ? 7 : 5;
-  const gap = isLarge ? 11 : 8;
-  const titleSize = isLarge ? 17 : 12;
-  const subSize = isLarge ? 14 : 10;
+  // Large fits 6 rows where it used to fit 7, so scale the row up by
+  // 7/6 = ~1.17x. Medium (and the fallback) keep the original sizes.
+  const iconSize = isLarge ? 33 : 28;
+  const corner = isLarge ? 6 : 5;
+  const gap = isLarge ? 9 : 8;
+  const titleSize = isLarge ? 14 : 12;
+  const subSize = isLarge ? 12 : 10;
 
   const row = w.addStack();
   row.centerAlignContent();
