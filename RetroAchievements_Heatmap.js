@@ -62,6 +62,28 @@ async function apiGet(endpoint, extraParams = {}) {
   return await req.loadJSON();
 }
 
+function sleep(ms) {
+  return new Promise(resolve => {
+    const t = new Timer();
+    t.timeInterval = ms;
+    t.schedule(() => resolve());
+  });
+}
+
+// Fetch one earned-between window, retrying with backoff. RetroAchievements
+// throttles rapid requests and then returns a non-array error body; treat
+// that (and outright network errors) as a retry rather than a blank month.
+async function fetchEarnedBetween(from, to) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await apiGet("API_GetAchievementsEarnedBetween.php", { f: from, t: to });
+      if (Array.isArray(r)) return r;
+    } catch (e) { /* network error — fall through to backoff */ }
+    if (attempt < 2) await sleep(500 * (attempt + 1)); // 0.5s, then 1.0s
+  }
+  return null; // gave up on this window
+}
+
 // ------------------------------------------------------------
 // Data fetching
 // ------------------------------------------------------------
@@ -77,30 +99,29 @@ async function getDailyPoints() {
   // big window silently caps its results (keeping the OLDEST and
   // dropping the NEWEST unlocks), which would blank out recent months.
   // So query one window PER MONTH and merge — each call stays well
-  // under the cap. The 12 requests run in parallel.
-  const tasks = [];
+  // under the cap.
+  //
+  // The requests run SEQUENTIALLY (not in parallel): RetroAchievements
+  // rate-limits bursts, and a throttled call returns a non-array error
+  // body that would otherwise leave a random month blank.
+
+  // grid[month][day-1] = points earned that day this year.
+  const grid = Array.from({ length: 12 }, () => new Array(31).fill(0));
+  let yearPts = 0;
+  let monthsFetched = 0;
+
   for (let m = 0; m < 12; m++) {
     const f = Math.floor(new Date(year, m, 1, 0, 0, 0).getTime() / 1000);
     if (f > nowSec) break; // month hasn't started yet
     // Inclusive end: last second of the month (or now, whichever first).
     const monthEnd = Math.floor((new Date(year, m + 1, 1, 0, 0, 0).getTime() - 1000) / 1000);
     const t = Math.min(monthEnd, nowSec);
-    tasks.push(apiGet("API_GetAchievementsEarnedBetween.php", { f, t }));
-  }
 
-  const results = await Promise.allSettled(tasks);
-  // Only treat it as a failure (-> fall back to cache) if EVERY call failed.
-  if (results.length && results.every(r => r.status === "rejected")) {
-    throw new Error("All RetroAchievements requests failed");
-  }
+    const unlocks = await fetchEarnedBetween(f, t);
+    if (!unlocks) continue; // this month failed even after retries
+    monthsFetched++;
 
-  // grid[month][day-1] = points earned that day this year.
-  const grid = Array.from({ length: 12 }, () => new Array(31).fill(0));
-  let yearPts = 0;
-
-  for (const r of results) {
-    if (r.status !== "fulfilled" || !Array.isArray(r.value)) continue;
-    for (const a of r.value) {
+    for (const a of unlocks) {
       const points = parseInt(a.Points) || 0;
       if (points <= 0 || !a.Date) continue;
       // RA timestamps are UTC ("2026-05-18 05:14:11"); render in local time.
@@ -110,6 +131,9 @@ async function getDailyPoints() {
       yearPts += points;
     }
   }
+
+  // Nothing came back at all -> let the caller fall back to cached data.
+  if (monthsFetched === 0) throw new Error("All RetroAchievements requests failed");
 
   // Find the single best day (most points) for color scaling + header.
   let maxDay = 0, bestMonth = -1, bestDay = -1;
