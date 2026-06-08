@@ -288,7 +288,7 @@ function drawHeatmap(data) {
   // Canvas is slightly wider than tall so the cells fill the full
   // width of the square widget (no dead space on the right). Cells
   // still come out taller-than-wide thanks to 31 columns vs 12 rows.
-  const W = 330, H = 300;
+  const W = 360, H = 300;
   const labelW = 16;   // left gutter for month initials
   const gap = 2;       // space between cells
   const cols = 31, rows = 12;
