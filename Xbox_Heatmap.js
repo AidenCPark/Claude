@@ -169,10 +169,16 @@ async function getDailyGamerscore() {
     skip += PAGE_SIZE;
   }
 
-  let maxDay = 0;
-  for (const row of grid) for (const v of row) if (v > maxDay) maxDay = v;
+  // Find the single best day (most gamerscore) for color scaling and
+  // the header readout.
+  let maxDay = 0, bestMonth = -1, bestDay = -1;
+  for (let m = 0; m < 12; m++) {
+    for (let d = 0; d < 31; d++) {
+      if (grid[m][d] > maxDay) { maxDay = grid[m][d]; bestMonth = m; bestDay = d; }
+    }
+  }
 
-  return { year, grid, yearGs, maxDay };
+  return { year, grid, yearGs, maxDay, bestMonth, bestDay };
 }
 
 // ============================================================
@@ -201,6 +207,15 @@ function fmtNum(n) {
 
 function daysInMonth(year, monthIndex) {
   return new Date(year, monthIndex + 1, 0).getDate(); // day 0 of next month
+}
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Top-right readout: the best single day this year, e.g. "Apr 3 · 250G".
+function bestDayText(data) {
+  if (!data.maxDay || data.bestMonth < 0) return "0G";
+  return `${MONTH_ABBR[data.bestMonth]} ${data.bestDay + 1} · ${fmtNum(data.maxDay)}G`;
 }
 
 // Map a day's gamerscore to a ramp index (0 = empty, 4 = busiest).
@@ -249,9 +264,10 @@ async function buildWidget() {
   yearLabel.textColor = COLORS.text;
   yearLabel.font = Font.boldSystemFont(12);
   header.addSpacer();
-  const total = header.addText("+" + fmtNum(data.yearGs) + "G");
-  total.textColor = COLORS.green;
-  total.font = Font.boldSystemFont(12);
+  const best = header.addText(bestDayText(data));
+  best.textColor = COLORS.green;
+  best.font = Font.boldSystemFont(12);
+  best.lineLimit = 1;
 
   w.addSpacer(6);
 
@@ -269,9 +285,10 @@ async function buildWidget() {
 function drawHeatmap(data) {
   const { year, grid, maxDay } = data;
 
-  // Canvas is square-ish; cells naturally become taller-than-wide
-  // because there are 31 columns but only 12 rows.
-  const W = 300, H = 300;
+  // Canvas is slightly wider than tall so the cells fill the full
+  // width of the square widget (no dead space on the right). Cells
+  // still come out taller-than-wide thanks to 31 columns vs 12 rows.
+  const W = 330, H = 300;
   const labelW = 16;   // left gutter for month initials
   const gap = 2;       // space between cells
   const cols = 31, rows = 12;
