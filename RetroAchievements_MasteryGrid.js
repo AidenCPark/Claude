@@ -27,6 +27,9 @@ const API_KEY  = "Yj7zpFMfhNfIrrtIBBTfwZn8FMp5HjBD";
 
 // Safety cap on how many icons to render (most-recent first if over).
 const MAX_GAMES = 160;
+// Cached icons are downscaled to this many px (square) to keep the
+// home-screen widget under its tight memory budget.
+const THUMB_PX = 140;
 
 const API_BASE = "https://retroachievements.org/API";
 const MEDIA_BASE = "https://media.retroachievements.org";
@@ -60,19 +63,32 @@ async function apiGet(endpoint, extraParams = {}) {
   return await req.loadJSON();
 }
 
-// Download a game icon, caching it on disk so refreshes are cheap.
+// Downscale an image to a small square thumbnail via an offscreen canvas.
+function thumbnail(img, size) {
+  const c = new DrawContext();
+  c.size = new Size(size, size);
+  c.opaque = false;
+  c.respectScreenScale = false;
+  c.drawImageInRect(img, new Rect(0, 0, size, size));
+  return c.getImage();
+}
+
+// Download a game icon, downscaling to a small thumbnail and caching that
+// on disk. Storing/loading thumbnails (not full-res art) keeps the widget
+// well under its memory budget.
 async function loadGameIcon(iconPath) {
   if (!iconPath) return null;
   const fm = FileManager.local();
-  const dir = fm.joinPath(fm.cacheDirectory(), "ra_game_icons");
+  const dir = fm.joinPath(fm.cacheDirectory(), "ra_game_thumbs");
   if (!fm.fileExists(dir)) fm.createDirectory(dir, true);
   const name = (iconPath.split("/").pop() || "icon.png").replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = fm.joinPath(dir, name);
   if (fm.fileExists(path)) return fm.readImage(path);
   try {
-    const img = await new Request(`${MEDIA_BASE}${iconPath}`).loadImage();
-    fm.writeImage(path, img);
-    return img;
+    const full = await new Request(`${MEDIA_BASE}${iconPath}`).loadImage();
+    const thumb = thumbnail(full, THUMB_PX);
+    fm.writeImage(path, thumb);
+    return thumb;
   } catch (e) {
     return null;
   }
@@ -138,26 +154,29 @@ async function getAwards() {
 // Grid drawing
 // ------------------------------------------------------------
 // Render the icons into one image. Columns are chosen to suit the
-// widget's shape; icon size falls out of how many games there are,
-// so everything fits regardless of count.
-function drawGrid(items, icons, aspect) {
+// widget's shape; icon size falls out of how many games there are, so
+// everything fits regardless of count. The canvas is kept to a fixed,
+// modest pixel size (and screen-scale off) so the bitmap stays small.
+async function buildGridImage(items, aspect) {
   const n = items.length;
-  const cell = 100;            // canvas units; final size scales to widget
-  const gap = 16;
-  const border = 7;            // thin border thickness
-
   let cols = Math.max(1, Math.round(Math.sqrt(n * aspect)));
   cols = Math.min(cols, n);
   const rows = Math.ceil(n / cols);
 
+  const cell = Math.min(THUMB_PX, Math.floor(680 / cols)); // bounded cell px
+  const gap = Math.max(3, Math.round(cell * 0.14));
+  const border = Math.max(2, Math.round(cell * 0.06));     // thin border
   const W = gap + cols * (cell + gap);
   const H = gap + rows * (cell + gap);
 
   const ctx = new DrawContext();
   ctx.size = new Size(W, H);
   ctx.opaque = false;          // let the widget gradient show in the gaps
-  ctx.respectScreenScale = true;
+  ctx.respectScreenScale = false;
 
+  // Load + draw one icon at a time so only a single source image is ever
+  // in memory — loading them all at once exceeded the widget's budget and
+  // rendered blank.
   for (let i = 0; i < n; i++) {
     const c = i % cols;
     const rIdx = Math.floor(i / cols);
@@ -165,7 +184,8 @@ function drawGrid(items, icons, aspect) {
     const y = gap + rIdx * (cell + gap);
     const rect = new Rect(x, y, cell, cell);
 
-    const icon = icons[i];
+    let icon = null;
+    try { icon = await loadGameIcon(items[i].icon); } catch (e) {}
     if (icon) {
       ctx.drawImageInRect(icon, rect);
     } else {
@@ -234,8 +254,7 @@ async function buildWidget() {
   const family = config.widgetFamily || "large";
   const aspect = family === "medium" ? 2.15 : (family === "small" ? 1.0 : 1.05);
 
-  const icons = await Promise.all(items.map(it => loadGameIcon(it.icon)));
-  const gridImg = drawGrid(items, icons, aspect);
+  const gridImg = await buildGridImage(items, aspect);
 
   const row = w.addStack();
   row.addSpacer();
