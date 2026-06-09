@@ -15,9 +15,9 @@
 // Icons auto-scale to fit however many games you have. Large
 // size is recommended, but it adapts to Medium/Small too.
 //
-// Games are ordered OLDEST at the top -> NEWEST at the bottom
-// (using when the title was last played as the completion proxy,
-// since Xbox doesn't expose a per-game completion date here).
+// Games are ordered OLDEST at the top -> NEWEST at the bottom, by when
+// each game was actually 100% completed (the unlock time of its last
+// achievement), falling back to last-played time if that can't be matched.
 //
 // Reuses the same Keychain credentials as the other Xbox scripts:
 //   - xbox_refreshtoken
@@ -30,11 +30,14 @@
 
 // Safety cap on how many icons to render (newest kept if over).
 const MAX_GAMES = 160;
+const PAGE_SIZE = 1000; // achievements fetched per request
+const MAX_PAGES = 30;   // safety cap (1000 * 30 = 30k achievements)
 
 // ------------------------------------------------------------
 // Endpoints
 // ------------------------------------------------------------
 const URL_TITLEHUB = "https://titlehub.xboxlive.com/users/xuid(<xid>)/titles/titleHistory/decoration/achievement,scid";
+const URL_ACHIEVEMENTS = "https://achievements.xboxlive.com/users/xuid(<xid>)/achievements?orderBy=UnlockTime&unlockedOnly=true";
 const URL_MS_TOKEN = "https://login.live.com/oauth20_token.srf";
 const URL_XBL_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
 const URL_XSTS = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -108,8 +111,44 @@ async function authenticate() {
 // ============================================================
 // Data
 // ============================================================
+// Page through ALL unlocked achievements and record, per title, the
+// time of its MOST RECENT unlock. For a 100%-completed game that last
+// unlock is the moment it was completed — i.e. the "mastered" date.
+// Returns a Map of titleId(string) -> latest unlock ISO timestamp.
+async function getMasteryDates() {
+  const dates = new Map();
+  let skip = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = `${URL_ACHIEVEMENTS}&maxItems=${PAGE_SIZE}&skipItems=${skip}`;
+    const req = new Request(url.replace("<xid>", XBOX_ID));
+    req.headers = {
+      "Authorization": XBOX_AUTH,
+      "x-xbl-contract-version": "2",
+      "Content-Type": "application/json",
+    };
+    req.timeoutInterval = 25;
+    const resp = await req.loadJSON();
+    const achs = (resp && resp.achievements) || [];
+    if (achs.length === 0) break;
+
+    for (const a of achs) {
+      const ta = a.titleAssociations && a.titleAssociations[0];
+      const tid = ta && ta.id != null ? String(ta.id) : null;
+      const when = a.progression ? a.progression.timeUnlocked : null;
+      if (!tid || !when) continue;
+      const prev = dates.get(tid);
+      // ISO 8601 strings sort lexicographically, so keep the max.
+      if (!prev || when > prev) dates.set(tid, when);
+    }
+    if (achs.length < PAGE_SIZE) break;
+    skip += PAGE_SIZE;
+  }
+  return dates;
+}
+
 // Pull the full title history with achievement progress and keep the
-// titles at 100% completion. Returns items ordered OLDEST first.
+// titles at 100% completion. Returns items ordered OLDEST first, by the
+// date each game was actually completed.
 async function getCompletions() {
   const req = new Request(URL_TITLEHUB.replace("<xid>", XBOX_ID));
   req.headers = {
@@ -119,7 +158,9 @@ async function getCompletions() {
     "Content-Type": "application/json",
   };
   req.timeoutInterval = 25;
-  const resp = await req.loadJSON();
+
+  // Fetch the title list and per-title completion dates together.
+  const [resp, dates] = await Promise.all([req.loadJSON(), getMasteryDates()]);
   const titles = (resp && resp.titles) || [];
 
   const items = [];
@@ -131,8 +172,11 @@ async function getCompletions() {
     if (isNaN(pct) || pct < 100) continue; // 100% only
     const icon = t.displayImage;
     if (!icon) continue;
-    const played = (t.titleHistory && t.titleHistory.lastTimePlayed) || "";
-    items.push({ icon, completedAt: played, name: t.name || "" });
+    // Prefer the real completion date (last achievement unlock); fall
+    // back to last-played time if the title id can't be matched.
+    const lastPlayed = (t.titleHistory && t.titleHistory.lastTimePlayed) || "";
+    const completedAt = (t.titleId != null && dates.get(String(t.titleId))) || lastPlayed;
+    items.push({ icon, completedAt, name: t.name || "" });
   }
 
   // Keep the most recent MAX_GAMES, but display OLDEST first (top) ->
