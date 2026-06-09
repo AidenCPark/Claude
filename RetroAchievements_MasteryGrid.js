@@ -124,11 +124,13 @@ async function getAwards() {
   }
 
   const items = [...byGame.values()];
-  // Keep the most recent MAX_GAMES, but display OLDEST first (top) ->
-  // NEWEST last (bottom).
+  // Cap to the most recent MAX_GAMES across everything.
   items.sort((x, y) => (y.awardedAt || "").localeCompare(x.awardedAt || "")); // newest first
   const capped = items.length > MAX_GAMES ? items.slice(0, MAX_GAMES) : items;
-  capped.reverse(); // oldest at top, newest at bottom
+  // Display order: MASTERED group first, then BEATEN; within each group
+  // oldest at the top -> newest at the bottom.
+  capped.sort((x, y) =>
+    (y.rank - x.rank) || (x.awardedAt || "").localeCompare(y.awardedAt || ""));
   return capped;
 }
 
