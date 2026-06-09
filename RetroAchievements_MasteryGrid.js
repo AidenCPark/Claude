@@ -124,8 +124,12 @@ async function getAwards() {
   }
 
   const items = [...byGame.values()];
-  items.sort((x, y) => (y.rank - x.rank) || (y.awardedAt || "").localeCompare(x.awardedAt || ""));
-  return items.length > MAX_GAMES ? items.slice(0, MAX_GAMES) : items;
+  // Keep the most recent MAX_GAMES, but display OLDEST first (top) ->
+  // NEWEST last (bottom).
+  items.sort((x, y) => (y.awardedAt || "").localeCompare(x.awardedAt || "")); // newest first
+  const capped = items.length > MAX_GAMES ? items.slice(0, MAX_GAMES) : items;
+  capped.reverse(); // oldest at top, newest at bottom
+  return capped;
 }
 
 // ------------------------------------------------------------
