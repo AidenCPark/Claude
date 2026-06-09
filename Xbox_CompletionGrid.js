@@ -33,14 +33,16 @@ const MAX_GAMES = 160;
 // Cached icons are downscaled to this many px (square) to keep the
 // home-screen widget under its tight memory budget.
 const THUMB_PX = 140;
-const PAGE_SIZE = 1000; // achievements fetched per request
-const MAX_PAGES = 30;   // safety cap (1000 * 30 = 30k achievements)
+// Per refresh, resolve at most this many not-yet-cached completion dates
+// when running AS A WIDGET (keeps memory/time low so it never renders
+// blank). In-app runs resolve all of them at once.
+const MAX_DATE_LOOKUPS = 40;
 
 // ------------------------------------------------------------
 // Endpoints
 // ------------------------------------------------------------
-const URL_TITLEHUB = "https://titlehub.xboxlive.com/users/xuid(<xid>)/titles/titleHistory/decoration/achievement,scid";
-const URL_ACHIEVEMENTS = "https://achievements.xboxlive.com/users/xuid(<xid>)/achievements?orderBy=UnlockTime&unlockedOnly=true";
+const URL_TITLEHUB = "https://titlehub.xboxlive.com/users/xuid(<xid>)/titles/titleHistory/decoration/achievement";
+const URL_TITLE_ACH = "https://achievements.xboxlive.com/users/xuid(<xid>)/achievements?titleId=<tid>&unlockedOnly=true&orderBy=UnlockTime&maxItems=1000";
 const URL_MS_TOKEN = "https://login.live.com/oauth20_token.srf";
 const URL_XBL_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
 const URL_XSTS = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -114,45 +116,53 @@ async function authenticate() {
 // ============================================================
 // Data
 // ============================================================
-// Page through ALL unlocked achievements and record, per title, the
-// time of its MOST RECENT unlock. For a 100%-completed game that last
-// unlock is the moment it was completed — i.e. the "mastered" date.
-// Returns a Map of titleId(string) -> latest unlock ISO timestamp.
-async function getMasteryDates() {
-  const dates = new Map();
-  let skip = 0;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const url = `${URL_ACHIEVEMENTS}&maxItems=${PAGE_SIZE}&skipItems=${skip}`;
-    const req = new Request(url.replace("<xid>", XBOX_ID));
-    req.headers = {
-      "Authorization": XBOX_AUTH,
-      "x-xbl-contract-version": "2",
-      "Content-Type": "application/json",
-    };
-    req.timeoutInterval = 25;
-    const resp = await req.loadJSON();
-    const achs = (resp && resp.achievements) || [];
-    if (achs.length === 0) break;
-
-    for (const a of achs) {
-      const ta = a.titleAssociations && a.titleAssociations[0];
-      const tid = ta && ta.id != null ? String(ta.id) : null;
-      const when = a.progression ? a.progression.timeUnlocked : null;
-      if (!tid || !when) continue;
-      const prev = dates.get(tid);
-      // ISO 8601 strings sort lexicographically, so keep the max.
-      if (!prev || when > prev) dates.set(tid, when);
-    }
-    if (achs.length < PAGE_SIZE) break;
-    skip += PAGE_SIZE;
-  }
-  return dates;
+// Persistent cache of titleId -> completion date. A game's completion
+// date never changes once earned, so once resolved we never look it up
+// again. This is what keeps the widget light: no paging of the full
+// achievement history.
+function dateMapPath() {
+  const fm = FileManager.local();
+  return { fm, path: fm.joinPath(fm.cacheDirectory(), "xbox_completion_dates.json") };
+}
+function loadDateMap() {
+  try {
+    const { fm, path } = dateMapPath();
+    return fm.fileExists(path) ? JSON.parse(fm.readString(path)) : {};
+  } catch (e) { return {}; }
+}
+function saveDateMap(map) {
+  try { const { fm, path } = dateMapPath(); fm.writeString(path, JSON.stringify(map)); } catch (e) {}
 }
 
-// Pull the full title history with achievement progress and keep the
-// titles at 100% completion. Returns items ordered OLDEST first, by the
-// date each game was actually completed.
-async function getCompletions() {
+// The completion date of a 100% game = the unlock time of its LAST
+// achievement. One small per-title request (not the whole history).
+async function getTitleCompletionDate(titleId) {
+  const url = URL_TITLE_ACH
+    .replace("<xid>", XBOX_ID)
+    .replace("<tid>", encodeURIComponent(titleId));
+  const req = new Request(url);
+  req.headers = {
+    "Authorization": XBOX_AUTH,
+    "x-xbl-contract-version": "2",
+    "Content-Type": "application/json",
+  };
+  req.timeoutInterval = 20;
+  const resp = await req.loadJSON();
+  const achs = (resp && resp.achievements) || [];
+  let max = "";
+  for (const a of achs) {
+    const when = a.progression ? a.progression.timeUnlocked : null;
+    if (when && when > max) max = when; // ISO strings sort lexicographically
+  }
+  return max || null;
+}
+
+// Pull the title history with achievement progress, keep the titles at
+// 100% completion, and order them OLDEST first by completion date.
+// `inApp` runs resolve all missing dates; widget runs resolve only a
+// capped number per refresh (filling the cache over a few refreshes),
+// falling back to last-played time for any not yet resolved.
+async function getCompletions(inApp) {
   const req = new Request(URL_TITLEHUB.replace("<xid>", XBOX_ID));
   req.headers = {
     "Authorization": XBOX_AUTH,
@@ -161,26 +171,42 @@ async function getCompletions() {
     "Content-Type": "application/json",
   };
   req.timeoutInterval = 25;
-
-  // Fetch the title list and per-title completion dates together.
-  const [resp, dates] = await Promise.all([req.loadJSON(), getMasteryDates()]);
+  const resp = await req.loadJSON();
   const titles = (resp && resp.titles) || [];
 
-  const items = [];
+  const completed = [];
   for (const t of titles) {
     const ach = t.achievement || {};
     const total = Number(ach.totalGamerscore) || 0;
     const pct = Number(ach.progressPercentage);
     if (total <= 0) continue;          // no achievements -> can't "complete"
     if (isNaN(pct) || pct < 100) continue; // 100% only
-    const icon = t.displayImage;
-    if (!icon) continue;
-    // Prefer the real completion date (last achievement unlock); fall
-    // back to last-played time if the title id can't be matched.
-    const lastPlayed = (t.titleHistory && t.titleHistory.lastTimePlayed) || "";
-    const completedAt = (t.titleId != null && dates.get(String(t.titleId))) || lastPlayed;
-    items.push({ icon, completedAt, name: t.name || "" });
+    if (!t.displayImage) continue;
+    completed.push({
+      titleId: t.titleId != null ? String(t.titleId) : "",
+      icon: t.displayImage,
+      lastPlayed: (t.titleHistory && t.titleHistory.lastTimePlayed) || "",
+    });
   }
+
+  // Resolve real completion dates, cached persistently and filled
+  // incrementally so a single run never does too much work.
+  const dateMap = loadDateMap();
+  const missing = completed.filter(c => c.titleId && !dateMap[c.titleId]);
+  const limit = inApp ? missing.length : Math.min(MAX_DATE_LOOKUPS, missing.length);
+  for (let i = 0; i < limit; i++) {
+    try {
+      const d = await getTitleCompletionDate(missing[i].titleId);
+      if (d) dateMap[missing[i].titleId] = d;
+    } catch (e) { /* leave unresolved; retried next refresh */ }
+  }
+  saveDateMap(dateMap);
+
+  const items = completed.map(c => ({
+    icon: c.icon,
+    // Prefer the real completion date; fall back to last-played until resolved.
+    completedAt: dateMap[c.titleId] || c.lastPlayed || "",
+  }));
 
   // Keep the most recent MAX_GAMES, but display OLDEST first (top) ->
   // NEWEST last (bottom).
@@ -314,7 +340,7 @@ async function buildWidget() {
   let items = null;
   try {
     await authenticate();
-    items = await getCompletions();
+    items = await getCompletions(!config.runsInWidget); // in-app: resolve all dates
     saveCache(items);
   } catch (e) {
     items = loadCache();
