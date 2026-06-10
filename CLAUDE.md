@@ -22,7 +22,8 @@ Notes on the pairs:
 - Xbox has no "beaten" tier, so its grid shows only 100% completions (gold);
   the RA grid shows mastered (gold) **and** beaten (silver).
 
-Widgets without a pair: `CityDashboard.js` (weather/air-quality dashboard).
+Widgets without a pair: `CityDashboard.js` (weather/air-quality dashboard),
+`BoxOffice.js` (current #1 box-office movie poster + weekend earnings).
 
 ## Testing
 
