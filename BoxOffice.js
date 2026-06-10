@@ -17,7 +17,14 @@
 // this script, and choose the Small size.
 // ============================================================
 
-const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+// Desktop UA so Mojo serves the full desktop table (a mobile UA returns
+// a different layout that this parser doesn't expect).
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const REQ_HEADERS = {
+  "User-Agent": UA,
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 const MOJO_BASE = "https://www.boxofficemojo.com";
 const CHART_URL = `${MOJO_BASE}/weekend/`;
 
@@ -52,31 +59,34 @@ function decodeEntities(s) {
 // Returns { title, earnings (number), posterUrl, releaseUrl }.
 // Parsing is intentionally isolated here so it's easy to tweak if
 // Mojo changes its markup.
-async function getTopMovie() {
-  const req = new Request(CHART_URL);
-  req.headers = { "User-Agent": UA };
+async function fetchText(url) {
+  const req = new Request(url);
+  req.headers = REQ_HEADERS;
   req.timeoutInterval = 25;
-  const html = await req.loadString();
+  return await req.loadString();
+}
 
-  // The #1 row links to a /release/ page tagged ...bo_we_table_1.
-  const lm = html.match(/href="(\/release\/[^"]*?ref_=bo_we_table_1)"[^>]*>([^<]+)<\/a>/);
-  if (!lm) throw new Error("Could not parse box office chart");
-  const releasePath = lm[1].replace(/&amp;/g, "&");
-  const title = decodeEntities(lm[2]);
+async function getTopMovie() {
+  const html = await fetchText(CHART_URL);
 
-  // The first money value after the title in that row is the weekend gross.
-  const idx = html.indexOf("bo_we_table_1");
-  const seg = html.slice(idx, idx + 6000);
-  const gm = seg.match(/\$[\d,]+/);
+  // Find the #1 row's release link. Primary: the ref-tagged top row;
+  // fallback: the first /release/ link on the page (the chart's #1).
+  let m = html.match(/href="(\/release\/[^"]*?ref_=bo_we_table_1)"[^>]*>([^<]+)<\/a>/);
+  if (!m) m = html.match(/href="(\/release\/rl\d+\/[^"]*)"[^>]*>([^<]{1,150})<\/a>/);
+  if (!m) throw new Error("Could not parse box office chart");
+  const releasePath = m[1].replace(/&amp;/g, "&");
+  const title = decodeEntities(m[2]);
+
+  // The first sizable money value after the title link is the weekend gross.
+  const pos = html.indexOf(m[0]);
+  const seg = html.slice(pos >= 0 ? pos : 0, (pos >= 0 ? pos : 0) + 8000);
+  const gm = seg.match(/\$[\d,]{4,}/);
   const earnings = gm ? parseInt(gm[0].replace(/[^\d]/g, ""), 10) : null;
 
   // Poster lives on the movie's release page (Amazon-hosted image).
   let posterUrl = null;
   try {
-    const relReq = new Request(MOJO_BASE + releasePath);
-    relReq.headers = { "User-Agent": UA };
-    relReq.timeoutInterval = 25;
-    const relHtml = await relReq.loadString();
+    const relHtml = await fetchText(MOJO_BASE + releasePath);
     const pm = relHtml.match(/https:\/\/m\.media-amazon\.com\/images\/M\/[^"'\s\\]+?\.(?:jpe?g|png)/i);
     posterUrl = pm ? pm[0] : null;
   } catch (e) { /* poster optional */ }
