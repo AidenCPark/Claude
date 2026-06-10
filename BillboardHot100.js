@@ -79,19 +79,15 @@ async function getTopSong() {
   const title = tm ? cleanText(tm[1]) : null;
   if (!title) throw new Error("Could not parse Billboard chart");
 
-  // Artist: lives in a small (non-bold) c-label right after the title.
+  // Artist: the first real-text node after the title. Scanning text nodes
+  // (rather than a specific span class) is robust to Billboard's markup —
+  // skip whitespace, dashes, pure numbers, and chart badges/labels.
   const afterTitle = tm ? block.slice(block.indexOf(tm[0]) + tm[0].length) : block;
   let artist = "";
-  const direct = afterTitle.match(/<span class="c-label a-no-trucate a-font-primary-s[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
-  if (direct) artist = cleanText(direct[1]);
-  // Fallback: first label that's real text — skip dashes, numbers, and
-  // chart badges (a leftover "-" is what made the artist show as a dash).
-  if (!artist || !/[a-zA-Z]/.test(artist)) {
-    const skip = /^(new|re-?entry|gains in performance|steady|-|—)$/i;
-    for (const lm of afterTitle.matchAll(/<span class="c-label[^"]*"[^>]*>([\s\S]*?)<\/span>/gi)) {
-      const txt = cleanText(lm[1]);
-      if (txt && /[a-zA-Z]/.test(txt) && !skip.test(txt)) { artist = txt; break; }
-    }
+  const skip = /^(new|re-?entry|gains in performance|steady|peak|last week|weeks at no\.?\s*1|weeks on chart|no\.?\s*1)$/i;
+  for (const raw of (afterTitle.match(/>[^<>]+</g) || [])) {
+    const txt = cleanText(raw.slice(1, -1));
+    if (txt && /[a-zA-Z]/.test(txt) && !/^\d+$/.test(txt) && !skip.test(txt)) { artist = txt; break; }
   }
 
   // Weeks on chart: the last standalone number among the row's c-labels
@@ -167,7 +163,7 @@ async function buildWidget() {
   grad.colors = [COLORS.bg1, COLORS.bg2];
   grad.locations = [0, 1];
   w.backgroundGradient = grad;
-  w.setPadding(7, 8, 7, 8);
+  w.setPadding(6, 8, 6, 8);
 
   let data = null;
   try {
@@ -187,7 +183,7 @@ async function buildWidget() {
   w.url = CHART_URL;
 
   // ---- Cover art ----
-  const COVER = 88;
+  const COVER = 96;
   const cover = await loadCover(data.coverUrl);
   const top = w.addStack();
   top.addSpacer();
@@ -207,14 +203,14 @@ async function buildWidget() {
   }
   top.addSpacer();
 
-  w.addSpacer(5);
+  w.addSpacer(4);
 
   // ---- Song title ----
   const tr = w.addStack();
   tr.addSpacer();
   const t = tr.addText(data.title || "");
   t.textColor = COLORS.text;
-  t.font = Font.boldSystemFont(13);
+  t.font = Font.boldSystemFont(12);
   t.lineLimit = 1;
   t.minimumScaleFactor = 0.6;
   t.centerAlignText();
@@ -226,7 +222,7 @@ async function buildWidget() {
     ar.addSpacer();
     const a = ar.addText(data.artist);
     a.textColor = COLORS.dim;
-    a.font = Font.systemFont(10);
+    a.font = Font.systemFont(9.5);
     a.lineLimit = 1;
     a.minimumScaleFactor = 0.7;
     a.centerAlignText();
@@ -241,7 +237,7 @@ async function buildWidget() {
     const label = data.weeks === 1 ? "1 week on chart" : `${data.weeks} weeks on chart`;
     const wk = wr.addText(label);
     wk.textColor = COLORS.accent;
-    wk.font = Font.semiboldSystemFont(10.5);
+    wk.font = Font.semiboldSystemFont(10);
     wk.centerAlignText();
     wr.addSpacer();
   }
