@@ -79,10 +79,20 @@ async function getTopSong() {
   const title = tm ? cleanText(tm[1]) : null;
   if (!title) throw new Error("Could not parse Billboard chart");
 
-  // Artist: the first c-label span after the title.
+  // Artist: lives in a small (non-bold) c-label right after the title.
   const afterTitle = tm ? block.slice(block.indexOf(tm[0]) + tm[0].length) : block;
-  const am = afterTitle.match(/<span class="c-label[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
-  const artist = am ? cleanText(am[1]) : "";
+  let artist = "";
+  const direct = afterTitle.match(/<span class="c-label a-no-trucate a-font-primary-s[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
+  if (direct) artist = cleanText(direct[1]);
+  // Fallback: first label that's real text — skip dashes, numbers, and
+  // chart badges (a leftover "-" is what made the artist show as a dash).
+  if (!artist || !/[a-zA-Z]/.test(artist)) {
+    const skip = /^(new|re-?entry|gains in performance|steady|-|—)$/i;
+    for (const lm of afterTitle.matchAll(/<span class="c-label[^"]*"[^>]*>([\s\S]*?)<\/span>/gi)) {
+      const txt = cleanText(lm[1]);
+      if (txt && /[a-zA-Z]/.test(txt) && !skip.test(txt)) { artist = txt; break; }
+    }
+  }
 
   // Weeks on chart: the last standalone number among the row's c-labels
   // (the trailing stat columns are Last Week / Peak / Weeks on Chart).
@@ -157,7 +167,7 @@ async function buildWidget() {
   grad.colors = [COLORS.bg1, COLORS.bg2];
   grad.locations = [0, 1];
   w.backgroundGradient = grad;
-  w.setPadding(8, 8, 8, 8);
+  w.setPadding(7, 8, 7, 8);
 
   let data = null;
   try {
@@ -177,7 +187,7 @@ async function buildWidget() {
   w.url = CHART_URL;
 
   // ---- Cover art ----
-  const COVER = 70;
+  const COVER = 88;
   const cover = await loadCover(data.coverUrl);
   const top = w.addStack();
   top.addSpacer();
@@ -197,7 +207,7 @@ async function buildWidget() {
   }
   top.addSpacer();
 
-  w.addSpacer(6);
+  w.addSpacer(5);
 
   // ---- Song title ----
   const tr = w.addStack();
@@ -225,7 +235,7 @@ async function buildWidget() {
 
   // ---- Weeks on chart (the comparable stat) ----
   if (data.weeks != null && !isNaN(data.weeks) && data.weeks >= 1) {
-    w.addSpacer(3);
+    w.addSpacer(2);
     const wr = w.addStack();
     wr.addSpacer();
     const label = data.weeks === 1 ? "1 week on chart" : `${data.weeks} weeks on chart`;
