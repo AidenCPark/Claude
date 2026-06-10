@@ -6,26 +6,25 @@
 // Billboard Hot 100 #1 Widget for Scriptable  (Small size)
 // ------------------------------------------------------------
 // Shows the current #1 song on the Billboard Hot 100 as its
-// cover art, with the song title, artist, and how many weeks it
-// has been on the chart.
+// cover art, with the song title, artist, and weeks on chart.
 //
-// Data comes from Billboard's Hot 100 chart page (no API key
-// needed). Results are cached so it still renders when offline /
-// if a fetch fails.
+// Data sources (both keyless):
+//   - Billboard Hot 100 chart as daily-updated JSON:
+//     github.com/mhollingshead/billboard-hot-100  (recent.json)
+//   - Cover art via the iTunes Search API
+// (Scraping billboard.com directly proved too fragile, so this
+//  uses structured JSON instead.)
+//
+// Results are cached so it still renders when offline / if a
+// fetch fails.
 //
 // Add a Scriptable widget, long-press -> "Edit Widget", pick
 // this script, and choose the Small size.
 // ============================================================
 
-// Desktop UA so Billboard serves the full desktop markup this parser
-// expects (a mobile UA can return a different layout).
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const REQ_HEADERS = {
-  "User-Agent": UA,
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-};
-const CHART_URL = "https://www.billboard.com/charts/hot-100/";
+const HOT100_JSON = "https://raw.githubusercontent.com/mhollingshead/billboard-hot-100/main/recent.json";
+const ITUNES_SEARCH = "https://itunes.apple.com/search";
+const BILLBOARD_URL = "https://www.billboard.com/charts/hot-100/";
 
 // ------------------------------------------------------------
 // Colors / theme
@@ -40,66 +39,33 @@ const COLORS = {
 };
 
 // ------------------------------------------------------------
-// HTML helpers
+// Data fetching
 // ------------------------------------------------------------
-function decodeEntities(s) {
-  return (s || "")
-    .replace(/&amp;/g, "&")
-    .replace(/&#0?39;/g, "'")
-    .replace(/&rsquo;/g, "’")
-    .replace(/&quot;/g, '"')
-    .replace(/&nbsp;/g, " ")
-    .trim();
-}
-function cleanText(s) {
-  return decodeEntities((s || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ")).trim();
-}
-
-// ------------------------------------------------------------
-// Data fetching  (Billboard Hot 100 chart)
-// ------------------------------------------------------------
-async function fetchText(url) {
-  const req = new Request(url);
-  req.headers = REQ_HEADERS;
-  req.timeoutInterval = 25;
-  return await req.loadString();
-}
-
-// Returns { title, artist, weeks (number|null), coverUrl }. Parsing is
-// isolated here so it's easy to tweak if Billboard changes its markup.
+// Returns { title, artist, weeks (number|null), coverUrl }.
 async function getTopSong() {
-  const html = await fetchText(CHART_URL);
+  const req = new Request(HOT100_JSON);
+  req.timeoutInterval = 25;
+  const json = await req.loadJSON();
+  const top = json && json.data && json.data[0];
+  if (!top || !top.song) throw new Error("No Hot 100 data");
 
-  // The #1 song is the first chart result row.
-  const rowStart = html.search(/o-chart-results-list-row/);
-  const block = rowStart >= 0 ? html.slice(rowStart, rowStart + 8000) : html;
+  const title = top.song;
+  const artist = top.artist || "";
+  const weeks = top.weeks_on_chart != null ? Number(top.weeks_on_chart) : null;
 
-  // Title lives in the row's h3#title-of-a-story.
-  const tm = block.match(/id="title-of-a-story"[^>]*>([\s\S]*?)<\/h3>/i);
-  const title = tm ? cleanText(tm[1]) : null;
-  if (!title) throw new Error("Could not parse Billboard chart");
-
-  // Artist: the first real-text node after the title. Scanning text nodes
-  // (rather than a specific span class) is robust to Billboard's markup —
-  // skip whitespace, dashes, pure numbers, and chart badges/labels.
-  const afterTitle = tm ? block.slice(block.indexOf(tm[0]) + tm[0].length) : block;
-  let artist = "";
-  const skip = /^(new|re-?entry|gains in performance|steady|peak|last week|weeks at no\.?\s*1|weeks on chart|no\.?\s*1)$/i;
-  for (const raw of (afterTitle.match(/>[^<>]+</g) || [])) {
-    const txt = cleanText(raw.slice(1, -1));
-    if (txt && /[a-zA-Z]/.test(txt) && !/^\d+$/.test(txt) && !skip.test(txt)) { artist = txt; break; }
-  }
-
-  // Weeks on chart: the last standalone number among the row's c-labels
-  // (the trailing stat columns are Last Week / Peak / Weeks on Chart).
-  let weeks = null;
-  const nums = [...block.matchAll(/<span class="c-label[^"]*"[^>]*>\s*(\d+)\s*<\/span>/gi)]
-    .map(x => parseInt(x[1], 10));
-  if (nums.length) weeks = nums[nums.length - 1];
-
-  // Cover art (Billboard's chart image CDN).
-  const cm = block.match(/https?:\/\/charts-static\.billboard\.com\/img\/[^"'\s]+?\.(?:jpe?g|png)/i);
-  const coverUrl = cm ? cm[0] : null;
+  // Cover art via the iTunes Search API (search the song + artist).
+  let coverUrl = null;
+  try {
+    const term = encodeURIComponent(`${title} ${artist}`);
+    const sReq = new Request(`${ITUNES_SEARCH}?term=${term}&entity=song&limit=1&country=US`);
+    sReq.timeoutInterval = 20;
+    const s = await sReq.loadJSON();
+    const r0 = s && s.results && s.results[0];
+    if (r0 && r0.artworkUrl100) {
+      // Upgrade the thumbnail URL to a larger, crisper image.
+      coverUrl = r0.artworkUrl100.replace(/\/\d+x\d+bb\./, "/600x600bb.");
+    }
+  } catch (e) { /* cover optional */ }
 
   return { title, artist, weeks, coverUrl };
 }
@@ -132,7 +98,7 @@ async function loadCover(url) {
   if (fm.fileExists(path)) return fm.readImage(path);
   try {
     const full = await new Request(url).loadImage();
-    const thumb = thumbnail(full, 200);
+    const thumb = thumbnail(full, 240);
     fm.writeImage(path, thumb);
     return thumb;
   } catch (e) {
@@ -163,7 +129,7 @@ async function buildWidget() {
   grad.colors = [COLORS.bg1, COLORS.bg2];
   grad.locations = [0, 1];
   w.backgroundGradient = grad;
-  w.setPadding(6, 8, 6, 8);
+  w.setPadding(5, 8, 5, 8);
 
   let data = null;
   try {
@@ -180,30 +146,30 @@ async function buildWidget() {
     return w;
   }
 
-  w.url = CHART_URL;
+  w.url = BILLBOARD_URL;
 
   // ---- Cover art ----
-  const COVER = 96;
+  const COVER = 100;
   const cover = await loadCover(data.coverUrl);
   const top = w.addStack();
   top.addSpacer();
   if (cover) {
     const im = top.addImage(cover);
     im.imageSize = new Size(COVER, COVER);
-    im.cornerRadius = 6;
+    im.cornerRadius = 7;
   } else {
     const card = top.addStack();
     card.size = new Size(COVER, COVER);
-    card.cornerRadius = 6;
+    card.cornerRadius = 7;
     card.backgroundColor = COLORS.card;
     card.centerAlignContent();
     const note = card.addText("♪");
     note.textColor = COLORS.accent;
-    note.font = Font.boldSystemFont(30);
+    note.font = Font.boldSystemFont(40);
   }
   top.addSpacer();
 
-  w.addSpacer(4);
+  w.addSpacer(3);
 
   // ---- Song title ----
   const tr = w.addStack();
@@ -231,13 +197,13 @@ async function buildWidget() {
 
   // ---- Weeks on chart (the comparable stat) ----
   if (data.weeks != null && !isNaN(data.weeks) && data.weeks >= 1) {
-    w.addSpacer(2);
+    w.addSpacer(1);
     const wr = w.addStack();
     wr.addSpacer();
     const label = data.weeks === 1 ? "1 week on chart" : `${data.weeks} weeks on chart`;
     const wk = wr.addText(label);
     wk.textColor = COLORS.accent;
-    wk.font = Font.semiboldSystemFont(10);
+    wk.font = Font.semiboldSystemFont(9.5);
     wk.centerAlignText();
     wr.addSpacer();
   }
