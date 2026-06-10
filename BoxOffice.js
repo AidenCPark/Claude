@@ -77,21 +77,31 @@ async function getTopMovie() {
   const releasePath = m[1].replace(/&amp;/g, "&");
   const title = decodeEntities(m[2]);
 
-  // The first sizable money value after the title link is the weekend gross.
+  // The first sizable money value after the title link is the weekend gross
+  // (used only as a fallback if the running total can't be read below).
   const pos = html.indexOf(m[0]);
   const seg = html.slice(pos >= 0 ? pos : 0, (pos >= 0 ? pos : 0) + 8000);
   const gm = seg.match(/\$[\d,]{4,}/);
-  const earnings = gm ? parseInt(gm[0].replace(/[^\d]/g, ""), 10) : null;
+  const weekend = gm ? parseInt(gm[0].replace(/[^\d]/g, ""), 10) : null;
 
-  // Poster lives on the movie's release page (Amazon-hosted image).
-  let posterUrl = null;
+  // The release page has the poster and the running total gross. Prefer the
+  // Worldwide total, then Domestic; fall back to the weekend figure.
+  let posterUrl = null, total = null, scope = "Weekend";
   try {
     const relHtml = await fetchText(MOJO_BASE + releasePath);
     const pm = relHtml.match(/https:\/\/m\.media-amazon\.com\/images\/M\/[^"'\s\\]+?\.(?:jpe?g|png)/i);
     posterUrl = pm ? pm[0] : null;
-  } catch (e) { /* poster optional */ }
 
-  return { title, earnings, posterUrl, releaseUrl: MOJO_BASE + releasePath };
+    let tm = relHtml.match(/Worldwide[\s\S]{0,200}?\$([\d,]{4,})/i);
+    if (tm) scope = "Worldwide";
+    else { tm = relHtml.match(/Domestic[\s\S]{0,200}?\$([\d,]{4,})/i); if (tm) scope = "Domestic"; }
+    if (tm) total = parseInt(tm[1].replace(/[^\d]/g, ""), 10);
+  } catch (e) { /* poster/total optional */ }
+
+  const earnings = total != null ? total : weekend;
+  if (total == null) scope = "Weekend";
+
+  return { title, earnings, scope, posterUrl, releaseUrl: MOJO_BASE + releasePath };
 }
 
 // ------------------------------------------------------------
@@ -220,9 +230,12 @@ async function buildWidget() {
   e.font = Font.boldSystemFont(17);
   er.addSpacer();
 
+  const scopeLabel = !data.scope ? "Total Gross"
+    : data.scope === "Weekend" ? "This Weekend"
+    : `${data.scope} Total`;
   const cr = w.addStack();
   cr.addSpacer();
-  const cap = cr.addText("This Weekend");
+  const cap = cr.addText(scopeLabel);
   cap.textColor = COLORS.dim;
   cap.font = Font.systemFont(8.5);
   cr.addSpacer();
