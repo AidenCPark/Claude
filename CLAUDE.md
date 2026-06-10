@@ -23,7 +23,8 @@ Notes on the pairs:
   the RA grid shows mastered (gold) **and** beaten (silver).
 
 Widgets without a pair: `CityDashboard.js` (weather/air-quality dashboard),
-`BoxOffice.js` (current #1 box-office movie poster + weekend earnings).
+`BoxOffice.js` (current #1 box-office movie poster + total gross),
+`BillboardHot100.js` (current #1 song cover art + artist + weeks on chart).
 
 ## Testing
 
