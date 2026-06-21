@@ -35,8 +35,8 @@ const COLORS = {
   bg1: new Color("#0b1220"),
   bg2: new Color("#15203a"),
   text: new Color("#f2f6ff"),
-  dim: new Color("#8ea0c0"),
-  faint: new Color("#5f6f90"),
+  dim: new Color("#aeb9d4"),
+  faint: new Color("#8a98ba"),
   line: new Color("#ffffff", 0.10),
   chip: new Color("#ffffff", 0.06),
   sun: new Color("#ffd24a"),
@@ -273,36 +273,40 @@ function addDivider(w) {
 function sectionLabel(w, text) {
   const l = w.addText(text);
   l.textColor = COLORS.faint;
-  l.font = Font.semiboldSystemFont(9);
+  l.font = Font.semiboldSystemFont(10);
 }
 
-// A compact stat chip: icon on top, value, then caption — all centered,
-// so the value gets the chip's full width and never truncates.
-function addChip(parent, symbol, color, value, caption) {
+// A compact stat chip: icon on top, value, then caption — vertically
+// centered in a fixed-width box so all chips are the same size.
+function addChip(parent, symbol, color, value, caption, width) {
   const chip = parent.addStack();
   chip.layoutVertically();
   chip.centerAlignContent();
+  chip.size = new Size(width, 58);
   chip.backgroundColor = COLORS.chip;
-  chip.cornerRadius = 9;
-  chip.setPadding(7, 7, 7, 7);
+  chip.cornerRadius = 10;
+  chip.setPadding(6, 4, 6, 4);
 
-  addSymbol(chip, symbol, 15, color);
+  chip.addSpacer();
+  addSymbol(chip, symbol, 17, color);
   chip.addSpacer(3);
 
   const v = chip.addText(value);
   v.textColor = COLORS.text;
   v.font = Font.boldSystemFont(15);
   v.lineLimit = 1;
-  v.minimumScaleFactor = 0.6;
+  v.minimumScaleFactor = 0.5;
   v.centerAlignText();
 
-  chip.addSpacer(1);
+  chip.addSpacer(2);
 
   const c = chip.addText(caption);
   c.textColor = COLORS.dim;
-  c.font = Font.systemFont(9);
+  c.font = Font.systemFont(10);
   c.lineLimit = 1;
+  c.minimumScaleFactor = 0.7;
   c.centerAlignText();
+  chip.addSpacer();
 }
 
 // ============================================================
@@ -394,8 +398,11 @@ async function buildWidget() {
     ["sun.max.fill", COLORS.sun, `${r(cur.uv_index)}`, "UV"],
     ["drop.fill", COLORS.accent, `${todayPop == null ? "—" : r(todayPop) + "%"}`, "Rain"],
   ];
+  // Fixed, equal chip width so the boxes all match. Sized conservatively
+  // to fit the smallest large-widget; flexible spacers spread any extra.
+  const CHIP_W = 56;
   for (let k = 0; k < chipDefs.length; k++) {
-    addChip(chips, ...chipDefs[k]);
+    addChip(chips, ...chipDefs[k], CHIP_W);
     if (k < chipDefs.length - 1) chips.addSpacer();
   }
 
@@ -421,19 +428,19 @@ async function buildWidget() {
 
     const lbl = col.addText(j === 0 ? "Now" : fmt(new Date(hTimes[idx]), "ha"));
     lbl.textColor = COLORS.dim;
-    lbl.font = Font.systemFont(10);
+    lbl.font = Font.mediumSystemFont(11);
     lbl.centerAlignText();
-    col.addSpacer(3);
+    col.addSpacer(4);
 
     const iconRow = col.addStack();
     iconRow.addSpacer();
-    addSymbol(iconRow, wx(code, true)[1], 18, wxColor(code));
+    addSymbol(iconRow, wx(code, true)[1], 21, wxColor(code));
     iconRow.addSpacer();
-    col.addSpacer(3);
+    col.addSpacer(4);
 
     const t = col.addText(`${r((hourly.temperature_2m || [])[idx])}${deg()}`);
     t.textColor = COLORS.text;
-    t.font = Font.semiboldSystemFont(12);
+    t.font = Font.semiboldSystemFont(13);
     t.centerAlignText();
 
     if (j < HOURS - 1) hRow.addSpacer();
@@ -458,23 +465,23 @@ async function buildWidget() {
 
     const day = col.addText(i === 0 ? "Today" : fmt(parseLocalDate(dTimes[i]), "EEE"));
     day.textColor = COLORS.dim;
-    day.font = Font.systemFont(10);
+    day.font = Font.mediumSystemFont(11);
     day.centerAlignText();
-    col.addSpacer(3);
+    col.addSpacer(4);
 
     const iconRow = col.addStack();
     iconRow.addSpacer();
-    addSymbol(iconRow, wx(code, true)[1], 18, wxColor(code));
+    addSymbol(iconRow, wx(code, true)[1], 21, wxColor(code));
     iconRow.addSpacer();
-    col.addSpacer(3);
+    col.addSpacer(4);
 
     const hi = col.addText(`${r((daily.temperature_2m_max || [])[i])}${deg()}`);
     hi.textColor = COLORS.text;
-    hi.font = Font.semiboldSystemFont(12);
+    hi.font = Font.semiboldSystemFont(13);
     hi.centerAlignText();
     const lo = col.addText(`${r((daily.temperature_2m_min || [])[i])}${deg()}`);
     lo.textColor = COLORS.faint;
-    lo.font = Font.systemFont(11);
+    lo.font = Font.systemFont(12);
     lo.centerAlignText();
 
     if (i < DAYS - 1) dRow.addSpacer();
@@ -491,30 +498,30 @@ async function buildWidget() {
   const sunrise = (daily.sunrise || [])[0];
   const sunset = (daily.sunset || [])[0];
   if (sunrise) {
-    addSymbol(foot, "sunrise.fill", 13, COLORS.sun);
+    addSymbol(foot, "sunrise.fill", 15, COLORS.sun);
     foot.addSpacer(4);
     const sr = foot.addText(fmt(new Date(sunrise), "h:mm a"));
     sr.textColor = COLORS.text;
-    sr.font = Font.systemFont(11);
+    sr.font = Font.systemFont(12);
     foot.addSpacer(12);
   }
   if (sunset) {
-    addSymbol(foot, "sunset.fill", 13, COLORS.storm);
+    addSymbol(foot, "sunset.fill", 15, COLORS.storm);
     foot.addSpacer(4);
     const ss = foot.addText(fmt(new Date(sunset), "h:mm a"));
     ss.textColor = COLORS.text;
-    ss.font = Font.systemFont(11);
+    ss.font = Font.systemFont(12);
   }
 
   foot.addSpacer();
 
   const aqiVal = air && air.current ? air.current.us_aqi : null;
   const info = aqiInfo(aqiVal);
-  addSymbol(foot, "aqi.medium", 13, info.color);
+  addSymbol(foot, "aqi.medium", 15, info.color);
   foot.addSpacer(4);
   const aqiText = foot.addText(aqiVal == null ? "AQI —" : `AQI ${r(aqiVal)} · ${info.label}`);
   aqiText.textColor = info.color;
-  aqiText.font = Font.semiboldSystemFont(11);
+  aqiText.font = Font.semiboldSystemFont(12);
   aqiText.lineLimit = 1;
 
   w.addSpacer();
