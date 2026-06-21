@@ -310,6 +310,84 @@ function addChip(parent, symbol, color, value, caption, width) {
 }
 
 // ============================================================
+// Dynamic background (time of day + weather + temperature)
+// ============================================================
+// Base sky palettes [top, bottom] by phase, and weather palettes that
+// override them. All kept dark/muted so the light text stays readable.
+const SKY = {
+  night: ["#0b1220", "#1b2848"],
+  dawn:  ["#27314c", "#774a5e"], // deep blue -> rose
+  day:   ["#1d4d77", "#4083b0"], // blue
+  dusk:  ["#2b2442", "#834d49"], // purple -> warm
+};
+const WX_BG = {
+  storm:    ["#15121d", "#2d2542"], // dark purple
+  rain:     ["#162130", "#2b3c50"], // cool gray-blue
+  snow:     ["#27333f", "#4a5a6c"], // cool gray
+  fog:      ["#232932", "#434b57"], // gray
+  overcast: ["#1f2733", "#3a4556"], // slate
+};
+const WARM_TINT = new Color("#e0843a");
+const COOL_TINT = new Color("#2f6f9e");
+
+function mix(a, b, t) {
+  const m = (x, y) => Math.round((x + (y - x) * t) * 255);
+  const hx = n => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0");
+  return new Color("#" + hx(m(a.red, b.red)) + hx(m(a.green, b.green)) + hx(m(a.blue, b.blue)));
+}
+
+function phaseOf(cur, daily) {
+  const now = Date.now();
+  const sr = daily.sunrise && daily.sunrise[0] ? new Date(daily.sunrise[0]).getTime() : null;
+  const ss = daily.sunset && daily.sunset[0] ? new Date(daily.sunset[0]).getTime() : null;
+  const win = 50 * 60 * 1000; // dawn/dusk window around sun events
+  if (sr != null && Math.abs(now - sr) <= win) return "dawn";
+  if (ss != null && Math.abs(now - ss) <= win) return "dusk";
+  return cur.is_day === 1 ? "day" : "night";
+}
+
+function wxCategory(code) {
+  if (code >= 95) return "storm";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return "rain";
+  if (code === 45 || code === 48) return "fog";
+  if (code === 3) return "overcast";
+  return "sky"; // 0,1 clear / 2 partly
+}
+
+function background(cur, daily) {
+  const phase = phaseOf(cur, daily);
+  const cat = wxCategory(cur.weather_code);
+
+  let top, bot;
+  if (cat === "sky") {
+    [top, bot] = SKY[phase].map(h => new Color(h));
+    if (cur.weather_code === 2) { // partly cloudy: nudge toward overcast
+      const oc = WX_BG.overcast.map(h => new Color(h));
+      top = mix(top, oc[0], 0.3);
+      bot = mix(bot, oc[1], 0.3);
+    }
+  } else {
+    [top, bot] = WX_BG[cat].map(h => new Color(h));
+    if (phase === "night") { // darken weather scenes after dark
+      const black = new Color("#000000");
+      top = mix(top, black, 0.25);
+      bot = mix(bot, black, 0.25);
+    }
+  }
+
+  // Subtle temperature tint on the lower color: warm when hot, cool when cold.
+  let tC = Number(cur.temperature_2m);
+  if (IMPERIAL) tC = (tC - 32) * 5 / 9;
+  const warmth = Math.max(0, Math.min(1, tC / 30)); // 0°C..30°C -> 0..1
+  const target = warmth >= 0.5 ? WARM_TINT : COOL_TINT;
+  const strength = Math.abs(warmth - 0.5) * 2 * 0.16; // up to ~0.16
+  bot = mix(bot, target, strength);
+
+  return [top, bot];
+}
+
+// ============================================================
 // Build widget
 // ============================================================
 async function buildWidget() {
@@ -345,6 +423,12 @@ async function buildWidget() {
   const daily = weather.daily || {};
   const hourly = weather.hourly || {};
   const [curLabel, curSymbol] = wx(cur.weather_code, cur.is_day === 1);
+
+  // Background shifts with time of day, weather, and temperature.
+  const dyn = new LinearGradient();
+  dyn.colors = background(cur, daily);
+  dyn.locations = [0, 1];
+  w.backgroundGradient = dyn;
 
   // Tapping opens a maps/weather search for the city.
   w.url = "https://weather.com/weather/today";
