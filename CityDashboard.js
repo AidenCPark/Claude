@@ -282,29 +282,29 @@ function addChip(parent, symbol, color, value, caption, width) {
   const chip = parent.addStack();
   chip.layoutVertically();
   chip.centerAlignContent();
-  chip.size = new Size(width, 58);
+  chip.size = new Size(width, 62);
   chip.backgroundColor = COLORS.chip;
   chip.cornerRadius = 10;
-  chip.setPadding(6, 4, 6, 4);
+  chip.setPadding(6, 3, 6, 3);
 
   chip.addSpacer();
-  addSymbol(chip, symbol, 17, color);
-  chip.addSpacer(3);
+  addSymbol(chip, symbol, 18, color);
+  chip.addSpacer(4);
 
   const v = chip.addText(value);
   v.textColor = COLORS.text;
-  v.font = Font.boldSystemFont(15);
+  v.font = Font.boldSystemFont(16);
   v.lineLimit = 1;
-  v.minimumScaleFactor = 0.5;
+  v.minimumScaleFactor = 0.6;
   v.centerAlignText();
 
   chip.addSpacer(2);
 
   const c = chip.addText(caption);
   c.textColor = COLORS.dim;
-  c.font = Font.systemFont(10);
+  c.font = Font.systemFont(11);
   c.lineLimit = 1;
-  c.minimumScaleFactor = 0.7;
+  c.minimumScaleFactor = 0.8;
   c.centerAlignText();
   chip.addSpacer();
 }
@@ -387,6 +387,17 @@ function background(cur, daily) {
   return [top, bot];
 }
 
+// Approximate (slightly conservative) large-widget width per device, so
+// chips can be sized to the available space without overflowing.
+function approxWidgetWidth() {
+  const sw = Device.screenSize().width;
+  if (sw >= 428) return 360;
+  if (sw >= 414) return 356;
+  if (sw >= 390) return 336;
+  if (sw >= 375) return 326;
+  return 318;
+}
+
 // ============================================================
 // Build widget
 // ============================================================
@@ -396,7 +407,7 @@ async function buildWidget() {
   grad.colors = [COLORS.bg1, COLORS.bg2];
   grad.locations = [0, 1];
   w.backgroundGradient = grad;
-  w.setPadding(14, 14, 14, 14);
+  w.setPadding(12, 18, 12, 18);
 
   let data = null;
   try {
@@ -445,12 +456,12 @@ async function buildWidget() {
   cityRow.addSpacer(4);
   const city = cityRow.addText(loc.city || "Current Location");
   city.textColor = COLORS.text;
-  city.font = Font.boldSystemFont(18);
+  city.font = Font.boldSystemFont(21);
   city.lineLimit = 1;
   city.minimumScaleFactor = 0.6;
   const when = left.addText(fmt(new Date(), "EEE, MMM d  ·  h:mm a"));
   when.textColor = COLORS.dim;
-  when.font = Font.systemFont(11);
+  when.font = Font.systemFont(13);
 
   head.addSpacer();
 
@@ -466,10 +477,10 @@ async function buildWidget() {
   temp.lineLimit = 1;
   const cond = tcol.addText(curLabel);
   cond.textColor = COLORS.dim;
-  cond.font = Font.systemFont(11);
+  cond.font = Font.systemFont(12);
   cond.lineLimit = 1;
 
-  w.addSpacer(10);
+  w.addSpacer(8);
 
   // ---------- Current stat chips ----------
   const chips = w.addStack();
@@ -482,15 +493,16 @@ async function buildWidget() {
     ["sun.max.fill", COLORS.sun, `${r(cur.uv_index)}`, "UV"],
     ["drop.fill", COLORS.accent, `${todayPop == null ? "—" : r(todayPop) + "%"}`, "Rain"],
   ];
-  // Fixed, equal chip width so the boxes all match. Sized conservatively
-  // to fit the smallest large-widget; flexible spacers spread any extra.
-  const CHIP_W = 56;
+  // Equal chip width sized to the device's available width so the boxes
+  // match AND use the space (less text shrinking). Flexible spacers between
+  // keep them aligned edge-to-edge with the hourly/daily rows below.
+  const CHIP_W = Math.floor((approxWidgetWidth() - 2 * 18 - 4 * 5) / 5);
   for (let k = 0; k < chipDefs.length; k++) {
     addChip(chips, ...chipDefs[k], CHIP_W);
     if (k < chipDefs.length - 1) chips.addSpacer();
   }
 
-  w.addSpacer(10);
+  w.addSpacer(8);
   addDivider(w);
   w.addSpacer(8);
 
@@ -571,7 +583,7 @@ async function buildWidget() {
     if (i < DAYS - 1) dRow.addSpacer();
   }
 
-  w.addSpacer(10);
+  w.addSpacer(8);
   addDivider(w);
   w.addSpacer(8);
 
