@@ -12,19 +12,27 @@
 //
 // It signs you in to your Microsoft account in a web view and
 // writes a fresh "xbox_refreshtoken" to the Keychain. It reuses
-// the "xbox_clientid" / "xbox_clientsecret" that are already
-// there (those don't change), so no other setup is needed.
+// the "xbox_clientid" / "xbox_clientsecret" already there.
 //
-// After it says "Success", open any Xbox widget to confirm.
+// IMPORTANT — the redirect URI must EXACTLY match one registered
+// for your app. Find it here:
+//   portal.azure.com (or entra.microsoft.com) -> App registrations
+//   -> All applications -> the app whose Application (client) ID
+//   matches your xbox_clientid -> Authentication -> Redirect URIs.
+// The script lets you pick a common one or paste the exact value,
+// and remembers your choice in the Keychain (xbox_redirecturi).
 // ============================================================
 
-// Redirect URI your app was registered with. The classic Microsoft
-// Account (login.live.com) desktop redirect is the default; only change
-// this if your app registration used a different redirect URI.
-const REDIRECT = "https://login.live.com/oauth20_desktop.srf";
 const SCOPE = "Xboxlive.signin Xboxlive.offline_access";
 const AUTHORIZE = "https://login.live.com/oauth20_authorize.srf";
 const TOKEN = "https://login.live.com/oauth20_token.srf";
+
+// Common redirect URIs to offer as quick picks.
+const CANDIDATES = [
+  "https://login.live.com/oauth20_desktop.srf",
+  "https://login.microsoftonline.com/common/oauth2/nativeclient",
+  "https://login.microsoftonline.com/consumers/oauth2/nativeclient",
+];
 
 function kc(key) {
   return Keychain.contains(key) ? Keychain.get(key) : null;
@@ -43,6 +51,39 @@ function param(url, name) {
   return m ? decodeURIComponent(m[1].replace(/\+/g, " ")) : null;
 }
 
+// Let the user choose / enter the redirect URI (remembered in Keychain).
+async function chooseRedirect() {
+  const saved = kc("xbox_redirecturi");
+  const a = new Alert();
+  a.title = "Redirect URI";
+  a.message = "Pick the redirect URI registered for your Xbox app, or enter it manually.\n\n" +
+    "Find the exact value in the Azure app registration:\nApp registrations → your app → Authentication → Redirect URIs.";
+  const actions = [];
+  if (saved) { a.addAction(`Use saved: ${saved}`); actions.push(saved); }
+  for (const c of CANDIDATES) { a.addAction(c); actions.push(c); }
+  a.addAction("Enter manually…"); // last
+  a.addCancelAction("Cancel");
+  const idx = await a.present();
+  if (idx === -1) return null;
+
+  let chosen;
+  if (idx < actions.length) {
+    chosen = actions[idx];
+  } else {
+    const b = new Alert();
+    b.title = "Enter redirect URI";
+    b.message = "Paste the exact redirect URI registered for your app.";
+    b.addTextField("https://…", saved || CANDIDATES[0]);
+    b.addAction("Use this");
+    b.addCancelAction("Cancel");
+    const j = await b.present();
+    if (j === -1) return null;
+    chosen = (b.textFieldValue(0) || "").trim();
+  }
+  if (chosen) Keychain.set("xbox_redirecturi", chosen);
+  return chosen;
+}
+
 async function main() {
   if (config.runsInWidget) return; // this is an interactive setup script
 
@@ -54,8 +95,11 @@ async function main() {
     return;
   }
 
+  const REDIRECT = await chooseRedirect();
+  if (!REDIRECT) return;
+
   await toast("Sign in to Xbox",
-    "Next you'll sign in with your Microsoft account.\n\nAfter it finishes loading (the page may go blank), tap Done in the top-left to continue.");
+    "Next you'll sign in with your Microsoft account.\n\nAfter it finishes loading (the page may go blank), tap Done in the top-left to continue.\n\nUsing redirect URI:\n" + REDIRECT);
 
   // 1) Authorization code via a web-view sign-in.
   const authUrl = `${AUTHORIZE}?client_id=${encodeURIComponent(clientId)}` +
@@ -78,7 +122,8 @@ async function main() {
 
   if (!code) {
     await toast("Sign-in not completed",
-      oauthErr ? `Microsoft returned: ${oauthErr}` : "No authorization code was captured. You can run the script again to retry.");
+      oauthErr ? `Microsoft returned: ${oauthErr}` :
+      "No authorization code was captured. If you saw an 'invalid redirect_uri' page, run the script again and choose a different redirect URI (the exact one from your app registration).");
     return;
   }
 
@@ -100,8 +145,7 @@ async function main() {
         "A new refresh token was saved to the Keychain. Open any Xbox widget (or run one from the app) to confirm it's working.");
     } else {
       const detail = tok && (tok.error_description || tok.error) ? (tok.error_description || tok.error) : "No refresh_token was returned.";
-      await toast("Token exchange failed", detail +
-        "\n\nIf it mentions the redirect URI, your app was registered with a different one — tell me and I'll update REDIRECT.");
+      await toast("Token exchange failed", detail);
     }
   } catch (e) {
     await toast("Network error", String(e));
