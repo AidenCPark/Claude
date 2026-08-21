@@ -144,26 +144,57 @@ async function tryXblToken(accessToken) {
   return null;
 }
 
-// Refresh the Microsoft access token. login.live.com is picky about the
-// refresh body, so this is called with and without the scope parameter —
-// whichever yields a token Xbox actually accepts wins.
-async function msRefresh(includeScope) {
+// A Microsoft access token is printable ASCII. loadString() has been seen
+// mangling login.live.com's token response (the access_token came back with
+// garbled multibyte characters), which yields a token Xbox rejects with a
+// bare 401 — so validate before using one.
+function looksLikeToken(t) {
+  return typeof t === "string" && t.length > 20 && /^[\x21-\x7E]+$/.test(t);
+}
+
+// POST a form and read the reply as JSON. loadJSON() decodes the response
+// bytes natively, avoiding the string-decoding corruption above; fall back
+// to the text path only if it can't parse.
+async function postForm(url, bodyStr) {
+  const mk = () => {
+    const r = new Request(url);
+    r.method = "POST";
+    r.headers = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json",
+    };
+    r.body = bodyStr;
+    r.timeoutInterval = 25;
+    return r;
+  };
+  try {
+    const r = mk();
+    const json = await r.loadJSON();
+    return { status: r.response ? r.response.statusCode : 0, json, text: "" };
+  } catch (e) {
+    return await send(mk());
+  }
+}
+
+// Refresh the Microsoft access token. The scope parameter is required —
+// omitting it returns 400 invalid_scope.
+async function msRefresh() {
   const refreshToken = Keychain.get("minecraft_refreshtoken");
-  const parts = [
+  const body = [
     "grant_type=refresh_token",
     "client_id=" + encodeURIComponent(MC_CLIENT_ID),
+    "scope=" + encodeURIComponent(MC_SCOPE),
     "refresh_token=" + encodeURIComponent(refreshToken),
-  ];
-  if (includeScope) parts.push("scope=" + encodeURIComponent(MC_SCOPE));
-  const req = new Request(URL_MS_TOKEN);
-  req.method = "POST";
-  req.headers = { "Content-Type": "application/x-www-form-urlencoded" };
-  req.body = parts.join("&");
-  const res = await send(req);
-  console.log(`msa refresh [scope=${includeScope}] -> ${res.status}: ${res.text.slice(0, 140)}`);
+  ].join("&");
+  const res = await postForm(URL_MS_TOKEN, body);
+  const tok = res.json || {};
+  console.log(`msa refresh -> ${res.status} (token ${tok.access_token ? tok.access_token.length : 0} chars,` +
+    ` clean=${looksLikeToken(tok.access_token)})`);
   // Refresh tokens rotate, so always keep the newest one.
-  if (res.json && res.json.refresh_token) Keychain.set("minecraft_refreshtoken", res.json.refresh_token);
-  return res.json && res.json.access_token ? res.json : null;
+  if (tok.refresh_token) Keychain.set("minecraft_refreshtoken", tok.refresh_token);
+  if (!tok.access_token) throw new Error(`MSAUTH ${res.status}: ${snippet(res.text, 90)}`);
+  if (!looksLikeToken(tok.access_token)) throw new Error("TOKEN_CORRUPT");
+  return tok;
 }
 
 async function authenticate() {
@@ -173,27 +204,20 @@ async function authenticate() {
   // if Xbox won't take it, drop it and refresh (trying both body forms).
   let xblToken = null;
   const cached = readTokenCache();
-  if (cached && cached.token && cached.exp > Date.now() + 60 * 1000) {
+  if (cached && looksLikeToken(cached.token) && cached.exp > Date.now() + 60 * 1000) {
     xblToken = await tryXblToken(cached.token);
     if (!xblToken) clearTokenCache(); // stale/revoked — fall through to refresh
   }
 
   if (!xblToken) {
-    let refreshed = false;
-    for (const withScope of [true, false]) {
-      const tok = await msRefresh(withScope);
-      if (!tok) continue;
-      refreshed = true;
-      xblToken = await tryXblToken(tok.access_token);
-      if (xblToken) {
-        writeTokenCache({
-          token: tok.access_token,
-          exp: Date.now() + ((Number(tok.expires_in) || 3600) * 1000),
-        });
-        break;
-      }
+    const tok = await msRefresh();
+    xblToken = await tryXblToken(tok.access_token);
+    if (xblToken) {
+      writeTokenCache({
+        token: tok.access_token,
+        exp: Date.now() + ((Number(tok.expires_in) || 3600) * 1000),
+      });
     }
-    if (!refreshed) throw new Error("MSAUTH: refresh rejected — re-run Minecraft Auth Setup");
   }
 
   if (!xblToken) {
@@ -491,6 +515,7 @@ function failureText(f) {
   if (f === "NO_REALMS") return "No Realms found for this account.";
   if (f === "FORBIDDEN") return "Realms refused the request — game version may be outdated. Try setting GAME_VERSION.";
   if (f === "NO_SETUP") return "Run Minecraft Auth Setup once to sign in.";
+  if (f === "TOKEN_CORRUPT") return "Microsoft returned an unreadable token. Re-run Minecraft Auth Setup.";
   if (f === "AUTH") return "Microsoft sign-in failed. Re-run Minecraft Auth Setup.";
   if (f && /^MSAUTH/.test(f)) return "Sign-in expired. Re-run Minecraft Auth Setup.\n" + f;
   // Anything else is a real server response — show it so it can be diagnosed.
