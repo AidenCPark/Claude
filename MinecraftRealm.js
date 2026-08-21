@@ -100,26 +100,37 @@ async function send(req) {
 }
 
 // Exchange a Microsoft access token for an Xbox Live user token.
-// Which RpsTicket format Xbox wants depends on how the token was issued:
-// AAD/v2.0 tokens use a "d=" prefix, legacy MSA (MBI_SSL) tokens are sent
-// bare. Try both rather than assuming, and report what Xbox actually said.
+// Xbox needs the x-xbl-contract-version header, and which RpsTicket format
+// it accepts depends on how the token was issued: "d=" for standard OAuth
+// tokens, "t=" for some app registrations, bare for others. Try each and
+// report what Xbox actually said rather than assuming one.
 async function getXblToken(accessToken) {
+  const forms = [
+    ["d=", "d=" + accessToken],
+    ["t=", "t=" + accessToken],
+    ["bare", accessToken],
+  ];
   let last = null;
-  for (const ticket of ["d=" + accessToken, accessToken]) {
+  for (const [label, ticket] of forms) {
     const req = new Request(URL_XBL_AUTH);
     req.method = "POST";
-    req.headers = { "Content-Type": "application/json", "Accept": "application/json" };
+    req.headers = {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "x-xbl-contract-version": "1",
+    };
     req.body = JSON.stringify({
       Properties: { AuthMethod: "RPS", RpsTicket: ticket, SiteName: "user.auth.xboxlive.com" },
       RelyingParty: "http://auth.xboxlive.com",
       TokenType: "JWT",
     });
     const res = await send(req);
-    console.log(`xbl [${ticket === accessToken ? "bare" : "d="}] -> ${res.status}: ${res.text.slice(0, 200)}`);
+    console.log(`xbl [${label}] -> ${res.status}: ${res.text.slice(0, 200)}`);
     if (res.json && res.json.Token) return res.json.Token;
     last = res;
   }
-  throw new Error(`XBL ${last ? last.status : 0}: ${snippet(last ? last.text : "", 100)}`);
+  const detail = snippet(last ? last.text : "", 90);
+  throw new Error(`XBL ${last ? last.status : 0}${detail ? ": " + detail : " (empty) — token rejected"}`);
 }
 
 async function authenticate() {
