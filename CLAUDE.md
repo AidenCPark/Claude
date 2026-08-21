@@ -27,14 +27,22 @@ Widgets without a pair: `CityDashboard.js` (weather/air-quality dashboard),
 `BillboardHot100.js` (current #1 song cover art + artist + weeks on chart),
 `MinecraftRealm.js` (who's online on a Java Realm).
 
-Helper scripts (not widgets): `Xbox_Auth_Setup.js` — interactive sign-in that
-regenerates `xbox_refreshtoken` in the Keychain. Run it when the Xbox-based
-widgets report bad credentials (e.g. after a Microsoft password change, which
-revokes the old refresh token).
+Helper scripts (not widgets):
+- `Xbox_Auth_Setup.js` — interactive sign-in that regenerates
+  `xbox_refreshtoken`. Run it when the Xbox-based widgets report bad
+  credentials (e.g. after a Microsoft password change, which revokes the old
+  refresh token).
+- `Minecraft_Auth_Setup.js` — device-code sign-in that writes
+  `minecraft_refreshtoken`, used only by `MinecraftRealm.js`.
 
-`MinecraftRealm.js` reuses the same Xbox Keychain credentials, but takes its
-XSTS token with relying party `rp://api.minecraftservices.com/` instead of
-`http://xboxlive.com`, then trades it for a Minecraft services token.
+`MinecraftRealm.js` deliberately does **not** use the `xbox_*` credentials:
+that Azure app isn't approved for the Minecraft API and returns
+`403 invalid app registration` at the `login_with_xbox` step. Getting an own
+app approved requires a Microsoft application form / Xbox Developer program,
+so it instead signs in with a public client ID that is already approved (the
+same approach prismarine-auth and Prism Launcher take) and keeps its token
+under a separate Keychain key. Its XSTS token uses relying party
+`rp://api.minecraftservices.com/` rather than `http://xboxlive.com`.
 
 ## Testing
 

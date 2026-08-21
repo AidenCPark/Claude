@@ -8,11 +8,16 @@
 // Shows how many players are currently on your Java Realm and
 // who they are (with their skin heads).
 //
-// This uses the same Keychain credentials as the Xbox widgets —
-// no new API key or setup needed:
-//   - xbox_refreshtoken
-//   - xbox_clientid
-//   - xbox_clientsecret
+// SETUP: run Minecraft_Auth_Setup.js once, in the Scriptable app.
+// It writes "minecraft_refreshtoken" to the Keychain.
+//
+// This does NOT use the xbox_* credentials: that Azure app isn't
+// approved by Microsoft for the Minecraft API and returns
+// "403 invalid app registration" at the Minecraft token step. The
+// setup script signs in with a public client ID that is approved
+// (see its comments), stored under its own Keychain key — so the
+// Xbox widgets are unaffected, and this widget keeps working even
+// if the Xbox token needs re-authenticating.
 //
 // Auth chain: Microsoft OAuth -> Xbox Live -> XSTS (relying
 // party rp://api.minecraftservices.com/) -> Minecraft services
@@ -41,7 +46,10 @@ const FALLBACK_VERSION = "1.21.4";
 // ------------------------------------------------------------
 // Endpoints
 // ------------------------------------------------------------
-const URL_MS_TOKEN = "https://login.live.com/oauth20_token.srf";
+// Public client ID approved for Minecraft (see Minecraft_Auth_Setup.js).
+const MC_CLIENT_ID = "389b1b32-b5d5-43b2-bddc-84ce938d6737";
+const MC_SCOPE = "XboxLive.signin offline_access";
+const URL_MS_TOKEN = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const URL_XBL_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
 const URL_XSTS = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const URL_MC_LOGIN = "https://api.minecraftservices.com/authentication/login_with_xbox";
@@ -73,13 +81,6 @@ let MC_TOKEN = null, MC_UUID = null, MC_NAME = null, GAME_VER = null;
 // ============================================================
 // Authentication
 // ============================================================
-function readKeychain(key) {
-  if (!Keychain.contains(key)) {
-    throw new Error(`Missing Keychain key: ${key}`);
-  }
-  return Keychain.get(key);
-}
-
 // Trim a response body down to something displayable in a widget.
 function snippet(text, n) {
   const t = (text || "").replace(/\s+/g, " ").trim();
@@ -97,19 +98,22 @@ async function send(req) {
 }
 
 async function authenticate() {
-  const refreshToken = readKeychain("xbox_refreshtoken");
-  const clientId = readKeychain("xbox_clientid");
-  const clientSecret = readKeychain("xbox_clientsecret");
-  const basic = "Basic " + btoa(`${clientId}:${clientSecret}`);
+  if (!Keychain.contains("minecraft_refreshtoken")) throw new Error("NO_SETUP");
+  const refreshToken = Keychain.get("minecraft_refreshtoken");
 
-  // 1) Microsoft access token from refresh token.
+  // 1) Microsoft access token from the refresh token. Public client, so
+  // there's no client secret — the client_id goes in the body.
   const msReq = new Request(URL_MS_TOKEN);
   msReq.method = "POST";
-  msReq.headers = { "Authorization": basic, "Content-Type": "application/x-www-form-urlencoded" };
-  msReq.body = "grant_type=refresh_token&refresh_token=" + encodeURIComponent(refreshToken);
-  const ms = await msReq.loadJSON();
-  if (ms.refresh_token) Keychain.set("xbox_refreshtoken", ms.refresh_token); // token rotation
-  if (!ms.access_token) throw new Error("AUTH");
+  msReq.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  msReq.body = "grant_type=refresh_token" +
+    "&client_id=" + encodeURIComponent(MC_CLIENT_ID) +
+    "&scope=" + encodeURIComponent(MC_SCOPE) +
+    "&refresh_token=" + encodeURIComponent(refreshToken);
+  const msRes = await send(msReq);
+  const ms = msRes.json || {};
+  if (ms.refresh_token) Keychain.set("minecraft_refreshtoken", ms.refresh_token); // rotation
+  if (!ms.access_token) throw new Error(`MSAUTH ${msRes.status}: ${snippet(msRes.text, 100)}`);
 
   // 2) Xbox Live user token.
   const xblReq = new Request(URL_XBL_AUTH);
@@ -392,7 +396,9 @@ function failureText(f) {
   if (f === "NO_JAVA") return "Minecraft says this account owns no Java Edition profile.";
   if (f === "NO_REALMS") return "No Realms found for this account.";
   if (f === "FORBIDDEN") return "Realms refused the request — game version may be outdated. Try setting GAME_VERSION.";
-  if (f === "AUTH") return "Microsoft sign-in failed. Re-run Xbox Auth Setup.";
+  if (f === "NO_SETUP") return "Run Minecraft Auth Setup once to sign in.";
+  if (f === "AUTH") return "Microsoft sign-in failed. Re-run Minecraft Auth Setup.";
+  if (f && /^MSAUTH/.test(f)) return "Sign-in expired. Re-run Minecraft Auth Setup.\n" + f;
   // Anything else is a real server response — show it so it can be diagnosed.
   if (f && /^(MCLOGIN|PROFILE|XSTS|HTTP_)/.test(f)) return f;
   return f || "No data yet. Check Keychain credentials and run once online.";
