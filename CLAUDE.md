@@ -24,7 +24,17 @@ Notes on the pairs:
 
 Widgets without a pair: `CityDashboard.js` (weather/air-quality dashboard),
 `BoxOffice.js` (current #1 box-office movie poster + total gross),
-`BillboardHot100.js` (current #1 song cover art + artist + weeks on chart).
+`BillboardHot100.js` (current #1 song cover art + artist + weeks on chart),
+`MinecraftRealm.js` (who's online on a Java Realm).
+
+Helper scripts (not widgets): `Xbox_Auth_Setup.js` — interactive sign-in that
+regenerates `xbox_refreshtoken` in the Keychain. Run it when the Xbox-based
+widgets report bad credentials (e.g. after a Microsoft password change, which
+revokes the old refresh token).
+
+`MinecraftRealm.js` reuses the same Xbox Keychain credentials, but takes its
+XSTS token with relying party `rp://api.minecraftservices.com/` instead of
+`http://xboxlive.com`, then trades it for a Minecraft services token.
 
 ## Testing
 
