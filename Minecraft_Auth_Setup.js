@@ -126,7 +126,7 @@ async function verifyChain(accessToken) {
       RelyingParty: "http://auth.xboxlive.com",
       TokenType: "JWT",
     }, { "x-xbl-contract-version": "1" });
-    note(`XBL [${label}] -> ${res.status} ${res.text ? res.text.slice(0, 160) : "(empty body)"}`);
+    note(`XBL [${label}] -> ${res.status}${res.status === 200 ? "" : " " + (res.text ? res.text.slice(0, 120) : "(empty body)")}`);
     if (res.json && res.json.Token) { xblToken = res.json.Token; note(`XBL [${label}] OK`); break; }
   }
   if (!xblToken) return { ok: false, step: "Xbox Live", log };
@@ -137,13 +137,13 @@ async function verifyChain(accessToken) {
     RelyingParty: MC_RELYING_PARTY,
     TokenType: "JWT",
   });
-  note(`XSTS -> ${xs.status} ${xs.text ? xs.text.slice(0, 160) : "(empty body)"}`);
+  note(`XSTS -> ${xs.status}${xs.status === 200 ? "" : " " + (xs.text ? xs.text.slice(0, 120) : "(empty body)")}`);
   if (!xs.json || !xs.json.Token) return { ok: false, step: "XSTS", log };
   const uhs = xs.json.DisplayClaims.xui[0].uhs;
 
   // Minecraft services token.
   const mc = await postJSON(URL_MC_LOGIN, { identityToken: `XBL3.0 x=${uhs};${xs.json.Token}` });
-  note(`login_with_xbox -> ${mc.status} ${mc.text ? mc.text.slice(0, 160) : "(empty body)"}`);
+  note(`login_with_xbox -> ${mc.status}${mc.status === 200 ? "" : " " + (mc.text ? mc.text.slice(0, 120) : "(empty body)")}`);
   if (!mc.json || !mc.json.access_token) return { ok: false, step: "Minecraft token", log };
 
   // Profile (proves Java Edition ownership).
@@ -151,7 +151,8 @@ async function verifyChain(accessToken) {
   pReq.headers = { "Authorization": "Bearer " + mc.json.access_token };
   const pText = await pReq.loadString();
   const pStatus = pReq.response ? pReq.response.statusCode : 0;
-  note(`profile -> ${pStatus} ${pText ? pText.slice(0, 160) : "(empty body)"}`);
+  const pName = (() => { try { return JSON.parse(pText).name; } catch (e) { return null; } })();
+  note(`profile -> ${pStatus}${pStatus === 200 ? (pName ? ` (${pName})` : "") : " " + (pText ? pText.slice(0, 120) : "(empty body)")}`);
   if (pStatus !== 200) return { ok: false, step: "Minecraft profile", log };
 
   return { ok: true, step: "all", log };

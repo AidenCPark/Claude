@@ -122,7 +122,9 @@ let LAST_XBL = null; // most recent Xbox Live rejection, for error reporting
 // it accepts depends on how the token was issued ("d=", "t=", or bare).
 // Returns the token, or null if Xbox rejected every form.
 async function tryXblToken(accessToken) {
-  const forms = [["d=", "d=" + accessToken], ["t=", "t=" + accessToken], ["bare", accessToken]];
+  // "t=" is what the legacy MSA (MBI_SSL) token needs; the others are kept
+  // as fallbacks in case the token source ever changes.
+  const forms = [["t=", "t=" + accessToken], ["d=", "d=" + accessToken], ["bare", accessToken]];
   for (const [label, ticket] of forms) {
     const req = new Request(URL_XBL_AUTH);
     req.method = "POST";
@@ -137,7 +139,8 @@ async function tryXblToken(accessToken) {
       TokenType: "JWT",
     });
     const res = await send(req);
-    console.log(`xbl [${label}] -> ${res.status}: ${res.text.slice(0, 200)}`);
+    // Log status only — the body carries a live Xbox token.
+    console.log(`xbl [${label}] -> ${res.status}`);
     if (res.json && res.json.Token) return res.json.Token;
     LAST_XBL = res;
   }
@@ -188,8 +191,7 @@ async function msRefresh() {
   ].join("&");
   const res = await postForm(URL_MS_TOKEN, body);
   const tok = res.json || {};
-  console.log(`msa refresh -> ${res.status} (token ${tok.access_token ? tok.access_token.length : 0} chars,` +
-    ` clean=${looksLikeToken(tok.access_token)})`);
+  console.log(`msa refresh -> ${res.status} (token ok=${looksLikeToken(tok.access_token)})`);
   // Refresh tokens rotate, so always keep the newest one.
   if (tok.refresh_token) Keychain.set("minecraft_refreshtoken", tok.refresh_token);
   if (!tok.access_token) throw new Error(`MSAUTH ${res.status}: ${snippet(res.text, 90)}`);
@@ -251,7 +253,8 @@ async function authenticate() {
   mcReq.headers = { "Content-Type": "application/json", "Accept": "application/json" };
   mcReq.body = JSON.stringify({ identityToken: `XBL3.0 x=${uhs};${xsts.Token}` });
   const mcRes = await send(mcReq);
-  console.log(`login_with_xbox -> ${mcRes.status}: ${mcRes.text}`);
+  // Status only: the body contains a live Minecraft bearer token.
+  console.log(`login_with_xbox -> ${mcRes.status}`);
   if (!mcRes.json || !mcRes.json.access_token) {
     throw new Error(`MCLOGIN ${mcRes.status}: ${snippet(mcRes.text, 110)}`);
   }
@@ -262,7 +265,8 @@ async function authenticate() {
   const pReq = new Request(URL_MC_PROFILE);
   pReq.headers = { "Authorization": "Bearer " + MC_TOKEN };
   const pRes = await send(pReq);
-  console.log(`profile -> ${pRes.status}: ${pRes.text}`);
+  console.log(`profile -> ${pRes.status}` +
+    (pRes.json && pRes.json.name ? ` (${pRes.json.name})` : ""));
   if (pRes.status === 404) throw new Error("NO_JAVA");
   if (!pRes.json || !pRes.json.id) {
     throw new Error(`PROFILE ${pRes.status}: ${snippet(pRes.text, 110)}`);
