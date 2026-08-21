@@ -115,6 +115,23 @@ function clearTokenCache() {
   try { if (Keychain.contains(TOKEN_CACHE_KEY)) Keychain.remove(TOKEN_CACHE_KEY); } catch (e) {}
 }
 
+// Cache of the Minecraft session (bearer token + profile). The token is
+// valid ~24h, and login_with_xbox is rate limited, so re-running the whole
+// chain on every widget refresh gets us a 429. Cleared whenever Realms
+// rejects the token, so re-authentication always recovers.
+const MC_SESSION_KEY = "minecraft_session_cache";
+function readSession() {
+  try {
+    return Keychain.contains(MC_SESSION_KEY) ? JSON.parse(Keychain.get(MC_SESSION_KEY)) : null;
+  } catch (e) { return null; }
+}
+function writeSession(o) {
+  try { Keychain.set(MC_SESSION_KEY, JSON.stringify(o)); } catch (e) {}
+}
+function clearSession() {
+  try { if (Keychain.contains(MC_SESSION_KEY)) Keychain.remove(MC_SESSION_KEY); } catch (e) {}
+}
+
 let LAST_XBL = null; // most recent Xbox Live rejection, for error reporting
 
 // Try to exchange a Microsoft access token for an Xbox Live user token.
@@ -202,6 +219,17 @@ async function msRefresh() {
 async function authenticate() {
   if (!Keychain.contains("minecraft_refreshtoken")) throw new Error("NO_SETUP");
 
+  // Reuse the cached Minecraft session if it's still good — this skips the
+  // whole Xbox/Minecraft chain, which is what was tripping the rate limit.
+  const sess = readSession();
+  if (sess && looksLikeToken(sess.token) && sess.uuid && sess.exp > Date.now() + 5 * 60 * 1000) {
+    MC_TOKEN = sess.token;
+    MC_UUID = sess.uuid;
+    MC_NAME = sess.name;
+    console.log("using cached minecraft session");
+    return;
+  }
+
   // 1+2) Get an Xbox Live token. Prefer the cached Microsoft access token;
   // if Xbox won't take it, drop it and refresh (trying both body forms).
   let xblToken = null;
@@ -255,6 +283,7 @@ async function authenticate() {
   const mcRes = await send(mcReq);
   // Status only: the body contains a live Minecraft bearer token.
   console.log(`login_with_xbox -> ${mcRes.status}`);
+  if (mcRes.status === 429) throw new Error("RATE_LIMIT");
   if (!mcRes.json || !mcRes.json.access_token) {
     throw new Error(`MCLOGIN ${mcRes.status}: ${snippet(mcRes.text, 110)}`);
   }
@@ -273,6 +302,14 @@ async function authenticate() {
   }
   MC_UUID = pRes.json.id;   // undashed
   MC_NAME = pRes.json.name;
+
+  // Remember it so the next refresh doesn't repeat the chain.
+  writeSession({
+    token: MC_TOKEN,
+    uuid: MC_UUID,
+    name: MC_NAME,
+    exp: Date.now() + ((Number(mcRes.json.expires_in) || 86400) * 1000),
+  });
 }
 
 // ============================================================
@@ -313,6 +350,7 @@ async function realmsGet(path) {
   req.timeoutInterval = 20;
   const body = await req.loadString();
   const status = req.response ? req.response.statusCode : 0;
+  if (status === 401) { clearSession(); throw new Error("REALMS_401"); } // stale session
   if (status === 403) throw new Error("FORBIDDEN"); // outdated version or no Realms access
   if (status >= 400) throw new Error("HTTP_" + status);
   try { return JSON.parse(body); } catch (e) { throw new Error("BAD_JSON"); }
@@ -481,6 +519,8 @@ async function buildWidget() {
     msg.font = Font.systemFont(8.5);
     msg.lineLimit = 0;
     msg.minimumScaleFactor = 0.7;
+    // Back off rather than hammering a failing (or rate-limited) endpoint.
+    w.refreshAfterDate = new Date(Date.now() + (failure === "RATE_LIMIT" ? 45 : 20) * 60 * 1000);
     return w;
   }
 
@@ -570,6 +610,8 @@ function failureText(f) {
   if (f === "FORBIDDEN") return "Realms refused the request — game version may be outdated. Try setting GAME_VERSION.";
   if (f === "NO_SETUP") return "Run Minecraft Auth Setup once to sign in.";
   if (f === "TOKEN_CORRUPT") return "Microsoft returned an unreadable token. Re-run Minecraft Auth Setup.";
+  if (f === "RATE_LIMIT") return "Minecraft is rate-limiting sign-ins. It'll retry automatically in a while.";
+  if (f === "REALMS_401") return "Session expired — it'll sign in again on the next refresh.";
   if (f === "AUTH") return "Microsoft sign-in failed. Re-run Minecraft Auth Setup.";
   if (f && /^MSAUTH/.test(f)) return "Sign-in expired. Re-run Minecraft Auth Setup.\n" + f;
   // Anything else is a real server response — show it so it can be diagnosed.
