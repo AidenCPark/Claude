@@ -39,10 +39,17 @@ Helper scripts (not widgets):
 that Azure app isn't approved for the Minecraft API and returns
 `403 invalid app registration` at the `login_with_xbox` step. Getting an own
 app approved requires a Microsoft application form / Xbox Developer program,
-so it instead signs in with a public client ID that is already approved (the
-same approach prismarine-auth and Prism Launcher take) and keeps its token
-under a separate Keychain key. Its XSTS token uses relying party
-`rp://api.minecraftservices.com/` rather than `http://xboxlive.com`.
+so it instead signs in as Minecraft's own launcher client
+(`00000000402b5328`) and keeps its token under a separate Keychain key. Its
+XSTS token uses relying party `rp://api.minecraftservices.com/` rather than
+`http://xboxlive.com`.
+
+That sign-in must use the **legacy MSA flow** — `login.live.com` with scope
+`service::user.auth.xboxlive.com::MBI_SSL`. The AAD v2.0 endpoint
+(`login.microsoftonline.com/consumers`) with scope `XboxLive.signin` returns
+400 for this client. The client ID and scope must match between
+`Minecraft_Auth_Setup.js` and `MinecraftRealm.js`, since a refresh token is
+only valid for the client that issued it.
 
 ## Testing
 

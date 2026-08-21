@@ -46,10 +46,12 @@ const FALLBACK_VERSION = "1.21.4";
 // ------------------------------------------------------------
 // Endpoints
 // ------------------------------------------------------------
-// Public client ID approved for Minecraft (see Minecraft_Auth_Setup.js).
-const MC_CLIENT_ID = "389b1b32-b5d5-43b2-bddc-84ce938d6737";
-const MC_SCOPE = "XboxLive.signin offline_access";
-const URL_MS_TOKEN = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+// Minecraft launcher's public client ID + classic Xbox Live scope, matching
+// the legacy MSA flow used by Minecraft_Auth_Setup.js. Must stay in sync with
+// that script: the refresh token is only valid for the client that issued it.
+const MC_CLIENT_ID = "00000000402b5328";
+const MC_SCOPE = "service::user.auth.xboxlive.com::MBI_SSL";
+const URL_MS_TOKEN = "https://login.live.com/oauth20_token.srf";
 const URL_XBL_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
 const URL_XSTS = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const URL_MC_LOGIN = "https://api.minecraftservices.com/authentication/login_with_xbox";
