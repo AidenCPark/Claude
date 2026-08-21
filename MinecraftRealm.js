@@ -318,6 +318,36 @@ async function realmsGet(path) {
   try { return JSON.parse(body); } catch (e) { throw new Error("BAD_JSON"); }
 }
 
+function normUuid(u) {
+  return String(u || "").replace(/-/g, "").toLowerCase();
+}
+
+// Parse /activities/liveplayerlist. Its shape is awkward: the per-realm entry
+// carries playerList as a JSON-encoded STRING that has to be parsed again.
+// Accept the plain-array variant too, in case the shape differs.
+function parseLivePlayers(resp, realmId, names) {
+  const out = [];
+  const lists = (resp && (resp.lists || resp.servers)) || [];
+  for (const entry of lists) {
+    if (!entry) continue;
+    const id = entry.serverId != null ? entry.serverId : entry.id;
+    if (id != null && String(id) !== String(realmId)) continue;
+    let pl = entry.playerList != null ? entry.playerList : entry.players;
+    if (typeof pl === "string") {
+      try { pl = JSON.parse(pl); } catch (e) { pl = []; }
+    }
+    if (!Array.isArray(pl)) continue;
+    for (const p of pl) {
+      if (!p) continue;
+      if (p.loggedIn === false || p.online === false) continue; // explicitly offline
+      const uuid = normUuid(p.playerId || p.uuid || p.id);
+      const name = p.name || names.get(uuid) || (uuid ? uuid.slice(0, 8) : "Player");
+      out.push({ name, uuid });
+    }
+  }
+  return out;
+}
+
 // Returns { name, state, online:[{name,uuid}], memberCount, maxPlayers }.
 async function getRealmStatus() {
   GAME_VER = await resolveVersion();
@@ -335,7 +365,9 @@ async function getRealmStatus() {
     if (open) realm = open;
   }
 
-  // The /worlds list leaves players empty — the per-realm endpoint has it.
+  // The per-realm endpoint carries the invited-member list. That's a roster,
+  // not presence — and it excludes the realm owner — so it's used here only
+  // to map UUIDs to display names.
   let players = [];
   try {
     const detail = await realmsGet(`/worlds/${realm.id}`);
@@ -345,9 +377,27 @@ async function getRealmStatus() {
     }
   } catch (e) { /* fall back to whatever the list gave us */ }
 
-  const online = players
-    .filter(p => p && p.online)
-    .map(p => ({ name: p.name || "Player", uuid: (p.uuid || "").replace(/-/g, "") }));
+  const names = new Map();
+  for (const p of players) if (p && p.uuid) names.set(normUuid(p.uuid), p.name);
+  if (realm.ownerUUID) names.set(normUuid(realm.ownerUUID), realm.owner || "Owner");
+
+  // Who is actually in the world right now.
+  let online = [];
+  try {
+    const live = await realmsGet("/activities/liveplayerlist");
+    console.log("liveplayerlist: " + JSON.stringify(live).slice(0, 300));
+    online = parseLivePlayers(live, realm.id, names);
+  } catch (e) {
+    console.log("liveplayerlist failed: " + (e && e.message ? e.message : e));
+  }
+
+  // Fall back to the roster's online flags if the live list gave nothing.
+  if (online.length === 0) {
+    online = players
+      .filter(p => p && p.online)
+      .map(p => ({ name: p.name || "Player", uuid: normUuid(p.uuid) }));
+  }
+  console.log(`online: ${online.length} (${online.map(p => p.name).join(", ")})`);
 
   return {
     name: realm.name || "Realm",
