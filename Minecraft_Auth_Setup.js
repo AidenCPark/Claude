@@ -42,6 +42,13 @@ const URL_TOKEN = "https://login.live.com/oauth20_token.srf";
 // How long to keep polling for you to finish signing in.
 const MAX_WAIT_SECONDS = 300;
 
+// Used to verify the token actually works, end to end, right after sign-in.
+const URL_XBL_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
+const URL_XSTS = "https://xsts.auth.xboxlive.com/xsts/authorize";
+const URL_MC_LOGIN = "https://api.minecraftservices.com/authentication/login_with_xbox";
+const URL_MC_PROFILE = "https://api.minecraftservices.com/minecraft/profile";
+const MC_RELYING_PARTY = "rp://api.minecraftservices.com/";
+
 function sleep(ms) {
   return new Promise(resolve => {
     const t = new Timer();
@@ -88,6 +95,68 @@ function cookieFrom(headers) {
   return null;
 }
 
+async function postJSON(url, body, extraHeaders) {
+  const req = new Request(url);
+  req.method = "POST";
+  req.headers = Object.assign({
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  }, extraHeaders || {});
+  req.body = JSON.stringify(body);
+  req.timeoutInterval = 25;
+  const text = await req.loadString();
+  const status = req.response ? req.response.statusCode : 0;
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) {}
+  return { status, text, json };
+}
+
+// Walk the whole chain with the freshly-issued access token and report where
+// it breaks. This distinguishes "the sign-in token is no good" from "the
+// widget's refreshed token is no good", which the widget alone can't tell.
+async function verifyChain(accessToken) {
+  const log = [];
+  const note = line => { log.push(line); console.log(line); };
+
+  // Xbox Live user token — try each documented RpsTicket format.
+  let xblToken = null;
+  for (const [label, ticket] of [["d=", "d=" + accessToken], ["t=", "t=" + accessToken], ["bare", accessToken]]) {
+    const res = await postJSON(URL_XBL_AUTH, {
+      Properties: { AuthMethod: "RPS", RpsTicket: ticket, SiteName: "user.auth.xboxlive.com" },
+      RelyingParty: "http://auth.xboxlive.com",
+      TokenType: "JWT",
+    }, { "x-xbl-contract-version": "1" });
+    note(`XBL [${label}] -> ${res.status} ${res.text ? res.text.slice(0, 160) : "(empty body)"}`);
+    if (res.json && res.json.Token) { xblToken = res.json.Token; note(`XBL [${label}] OK`); break; }
+  }
+  if (!xblToken) return { ok: false, step: "Xbox Live", log };
+
+  // XSTS for Minecraft services.
+  const xs = await postJSON(URL_XSTS, {
+    Properties: { SandboxId: "RETAIL", UserTokens: [xblToken] },
+    RelyingParty: MC_RELYING_PARTY,
+    TokenType: "JWT",
+  });
+  note(`XSTS -> ${xs.status} ${xs.text ? xs.text.slice(0, 160) : "(empty body)"}`);
+  if (!xs.json || !xs.json.Token) return { ok: false, step: "XSTS", log };
+  const uhs = xs.json.DisplayClaims.xui[0].uhs;
+
+  // Minecraft services token.
+  const mc = await postJSON(URL_MC_LOGIN, { identityToken: `XBL3.0 x=${uhs};${xs.json.Token}` });
+  note(`login_with_xbox -> ${mc.status} ${mc.text ? mc.text.slice(0, 160) : "(empty body)"}`);
+  if (!mc.json || !mc.json.access_token) return { ok: false, step: "Minecraft token", log };
+
+  // Profile (proves Java Edition ownership).
+  const pReq = new Request(URL_MC_PROFILE);
+  pReq.headers = { "Authorization": "Bearer " + mc.json.access_token };
+  const pText = await pReq.loadString();
+  const pStatus = pReq.response ? pReq.response.statusCode : 0;
+  note(`profile -> ${pStatus} ${pText ? pText.slice(0, 160) : "(empty body)"}`);
+  if (pStatus !== 200) return { ok: false, step: "Minecraft profile", log };
+
+  return { ok: true, step: "all", log };
+}
+
 async function main() {
   if (config.runsInWidget) return; // interactive setup only
 
@@ -132,9 +201,19 @@ async function main() {
 
     if (res.json && res.json.refresh_token) {
       Keychain.set("minecraft_refreshtoken", res.json.refresh_token);
-      await toast("Success ✅",
-        "Signed in. The Minecraft Realm widget can now read your Realm.\n\n" +
-        "Open MinecraftRealm.js (or its widget) to confirm.");
+
+      // Signed in — now prove the token actually reaches Minecraft.
+      const v = await verifyChain(res.json.access_token);
+      if (v.ok) {
+        await toast("Success ✅",
+          "Signed in and verified all the way to your Minecraft profile.\n\n" +
+          "Open MinecraftRealm.js (or its widget) to see your Realm.");
+      } else {
+        await toast(`Signed in, but ${v.step} failed`,
+          "The token was saved, but the chain broke at: " + v.step +
+          "\n\n" + v.log.join("\n\n").slice(0, 700) +
+          "\n\n(Full detail is in the console below.)");
+      }
       return;
     }
 
