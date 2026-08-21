@@ -80,6 +80,22 @@ function readKeychain(key) {
   return Keychain.get(key);
 }
 
+// Trim a response body down to something displayable in a widget.
+function snippet(text, n) {
+  const t = (text || "").replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
+}
+
+// Run a request and return { status, text, json } so failures can report
+// what the server actually said instead of being guessed at.
+async function send(req) {
+  const text = await req.loadString();
+  const status = req.response ? req.response.statusCode : 0;
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) {}
+  return { status, text, json };
+}
+
 async function authenticate() {
   const refreshToken = readKeychain("xbox_refreshtoken");
   const clientId = readKeychain("xbox_clientid");
@@ -115,26 +131,41 @@ async function authenticate() {
     RelyingParty: MC_RELYING_PARTY,
     TokenType: "JWT",
   });
-  const xsts = await xstsReq.loadJSON();
-  if (!xsts.Token) throw new Error("AUTH");
+  const xstsRes = await send(xstsReq);
+  const xsts = xstsRes.json || {};
+  if (!xsts.Token) {
+    // XErr codes are very diagnostic (e.g. 2148916233 = no Xbox account).
+    const xerr = xsts.XErr != null ? ` XErr ${xsts.XErr}` : "";
+    throw new Error(`XSTS ${xstsRes.status}${xerr}: ${snippet(xstsRes.text, 90)}`);
+  }
   const uhs = xsts.DisplayClaims.xui[0].uhs;
 
-  // 4) Trade the XSTS token for a Minecraft services token.
+  // 4) Trade the XSTS token for a Minecraft services token. A failure here
+  // usually means the Azure app isn't authorised for Minecraft services —
+  // NOT that the account lacks Java Edition, so report what came back.
   const mcReq = new Request(URL_MC_LOGIN);
   mcReq.method = "POST";
   mcReq.headers = { "Content-Type": "application/json", "Accept": "application/json" };
   mcReq.body = JSON.stringify({ identityToken: `XBL3.0 x=${uhs};${xsts.Token}` });
-  const mc = await mcReq.loadJSON();
-  if (!mc.access_token) throw new Error("NO_JAVA"); // no Java Edition on this account
-  MC_TOKEN = mc.access_token;
+  const mcRes = await send(mcReq);
+  console.log(`login_with_xbox -> ${mcRes.status}: ${mcRes.text}`);
+  if (!mcRes.json || !mcRes.json.access_token) {
+    throw new Error(`MCLOGIN ${mcRes.status}: ${snippet(mcRes.text, 110)}`);
+  }
+  MC_TOKEN = mcRes.json.access_token;
 
-  // 5) Profile gives the UUID + username the Realms cookie needs.
+  // 5) Profile gives the UUID + username the Realms cookie needs. A 404 here
+  // genuinely does mean no Java Edition owned by this account.
   const pReq = new Request(URL_MC_PROFILE);
   pReq.headers = { "Authorization": "Bearer " + MC_TOKEN };
-  const prof = await pReq.loadJSON();
-  if (!prof.id) throw new Error("NO_JAVA");
-  MC_UUID = prof.id;   // undashed
-  MC_NAME = prof.name;
+  const pRes = await send(pReq);
+  console.log(`profile -> ${pRes.status}: ${pRes.text}`);
+  if (pRes.status === 404) throw new Error("NO_JAVA");
+  if (!pRes.json || !pRes.json.id) {
+    throw new Error(`PROFILE ${pRes.status}: ${snippet(pRes.text, 110)}`);
+  }
+  MC_UUID = pRes.json.id;   // undashed
+  MC_NAME = pRes.json.name;
 }
 
 // ============================================================
@@ -282,7 +313,9 @@ async function buildWidget() {
     w.addSpacer(4);
     const msg = w.addText(failureText(failure));
     msg.textColor = COLORS.dim;
-    msg.font = Font.systemFont(10);
+    msg.font = Font.systemFont(8.5);
+    msg.lineLimit = 0;
+    msg.minimumScaleFactor = 0.7;
     return w;
   }
 
@@ -356,11 +389,13 @@ async function buildWidget() {
 }
 
 function failureText(f) {
-  if (f === "NO_JAVA") return "No Java Edition on this account.";
+  if (f === "NO_JAVA") return "Minecraft says this account owns no Java Edition profile.";
   if (f === "NO_REALMS") return "No Realms found for this account.";
-  if (f === "FORBIDDEN") return "Realms refused the request — the game version may be outdated. Try setting GAME_VERSION.";
-  if (f === "AUTH") return "Sign-in failed. Re-run the Xbox auth setup to refresh the token.";
-  return "No data yet. Check Keychain credentials and run once online.";
+  if (f === "FORBIDDEN") return "Realms refused the request — game version may be outdated. Try setting GAME_VERSION.";
+  if (f === "AUTH") return "Microsoft sign-in failed. Re-run Xbox Auth Setup.";
+  // Anything else is a real server response — show it so it can be diagnosed.
+  if (f && /^(MCLOGIN|PROFILE|XSTS|HTTP_)/.test(f)) return f;
+  return f || "No data yet. Check Keychain credentials and run once online.";
 }
 
 // ============================================================
