@@ -99,6 +99,29 @@ async function send(req) {
   return { status, text, json };
 }
 
+// Exchange a Microsoft access token for an Xbox Live user token.
+// Which RpsTicket format Xbox wants depends on how the token was issued:
+// AAD/v2.0 tokens use a "d=" prefix, legacy MSA (MBI_SSL) tokens are sent
+// bare. Try both rather than assuming, and report what Xbox actually said.
+async function getXblToken(accessToken) {
+  let last = null;
+  for (const ticket of ["d=" + accessToken, accessToken]) {
+    const req = new Request(URL_XBL_AUTH);
+    req.method = "POST";
+    req.headers = { "Content-Type": "application/json", "Accept": "application/json" };
+    req.body = JSON.stringify({
+      Properties: { AuthMethod: "RPS", RpsTicket: ticket, SiteName: "user.auth.xboxlive.com" },
+      RelyingParty: "http://auth.xboxlive.com",
+      TokenType: "JWT",
+    });
+    const res = await send(req);
+    console.log(`xbl [${ticket === accessToken ? "bare" : "d="}] -> ${res.status}: ${res.text.slice(0, 200)}`);
+    if (res.json && res.json.Token) return res.json.Token;
+    last = res;
+  }
+  throw new Error(`XBL ${last ? last.status : 0}: ${snippet(last ? last.text : "", 100)}`);
+}
+
 async function authenticate() {
   if (!Keychain.contains("minecraft_refreshtoken")) throw new Error("NO_SETUP");
   const refreshToken = Keychain.get("minecraft_refreshtoken");
@@ -118,22 +141,14 @@ async function authenticate() {
   if (!ms.access_token) throw new Error(`MSAUTH ${msRes.status}: ${snippet(msRes.text, 100)}`);
 
   // 2) Xbox Live user token.
-  const xblReq = new Request(URL_XBL_AUTH);
-  xblReq.method = "POST";
-  xblReq.headers = { "Content-Type": "application/json" };
-  xblReq.body = JSON.stringify({
-    Properties: { AuthMethod: "RPS", RpsTicket: "d=" + ms.access_token, SiteName: "user.auth.xboxlive.com" },
-    RelyingParty: "http://auth.xboxlive.com",
-    TokenType: "JWT",
-  });
-  const xbl = await xblReq.loadJSON();
+  const xblToken = await getXblToken(ms.access_token);
 
   // 3) XSTS token for Minecraft services (not xboxlive.com).
   const xstsReq = new Request(URL_XSTS);
   xstsReq.method = "POST";
   xstsReq.headers = { "Content-Type": "application/json" };
   xstsReq.body = JSON.stringify({
-    Properties: { SandboxId: "RETAIL", UserTokens: [xbl.Token] },
+    Properties: { SandboxId: "RETAIL", UserTokens: [xblToken] },
     RelyingParty: MC_RELYING_PARTY,
     TokenType: "JWT",
   });
@@ -402,7 +417,7 @@ function failureText(f) {
   if (f === "AUTH") return "Microsoft sign-in failed. Re-run Minecraft Auth Setup.";
   if (f && /^MSAUTH/.test(f)) return "Sign-in expired. Re-run Minecraft Auth Setup.\n" + f;
   // Anything else is a real server response — show it so it can be diagnosed.
-  if (f && /^(MCLOGIN|PROFILE|XSTS|HTTP_)/.test(f)) return f;
+  if (f && /^(MCLOGIN|PROFILE|XSTS|XBL|HTTP_)/.test(f)) return f;
   return f || "No data yet. Check Keychain credentials and run once online.";
 }
 
