@@ -99,18 +99,30 @@ async function send(req) {
   return { status, text, json };
 }
 
-// Exchange a Microsoft access token for an Xbox Live user token.
+// Cache of the Microsoft access token, so we don't burn (and rotate) the
+// refresh token on every widget run. Invalidated whenever Xbox rejects it,
+// so a revoked/re-issued sign-in always recovers.
+const TOKEN_CACHE_KEY = "minecraft_accesstoken_cache";
+function readTokenCache() {
+  try {
+    return Keychain.contains(TOKEN_CACHE_KEY) ? JSON.parse(Keychain.get(TOKEN_CACHE_KEY)) : null;
+  } catch (e) { return null; }
+}
+function writeTokenCache(o) {
+  try { Keychain.set(TOKEN_CACHE_KEY, JSON.stringify(o)); } catch (e) {}
+}
+function clearTokenCache() {
+  try { if (Keychain.contains(TOKEN_CACHE_KEY)) Keychain.remove(TOKEN_CACHE_KEY); } catch (e) {}
+}
+
+let LAST_XBL = null; // most recent Xbox Live rejection, for error reporting
+
+// Try to exchange a Microsoft access token for an Xbox Live user token.
 // Xbox needs the x-xbl-contract-version header, and which RpsTicket format
-// it accepts depends on how the token was issued: "d=" for standard OAuth
-// tokens, "t=" for some app registrations, bare for others. Try each and
-// report what Xbox actually said rather than assuming one.
-async function getXblToken(accessToken) {
-  const forms = [
-    ["d=", "d=" + accessToken],
-    ["t=", "t=" + accessToken],
-    ["bare", accessToken],
-  ];
-  let last = null;
+// it accepts depends on how the token was issued ("d=", "t=", or bare).
+// Returns the token, or null if Xbox rejected every form.
+async function tryXblToken(accessToken) {
+  const forms = [["d=", "d=" + accessToken], ["t=", "t=" + accessToken], ["bare", accessToken]];
   for (const [label, ticket] of forms) {
     const req = new Request(URL_XBL_AUTH);
     req.method = "POST";
@@ -127,32 +139,67 @@ async function getXblToken(accessToken) {
     const res = await send(req);
     console.log(`xbl [${label}] -> ${res.status}: ${res.text.slice(0, 200)}`);
     if (res.json && res.json.Token) return res.json.Token;
-    last = res;
+    LAST_XBL = res;
   }
-  const detail = snippet(last ? last.text : "", 90);
-  throw new Error(`XBL ${last ? last.status : 0}${detail ? ": " + detail : " (empty) — token rejected"}`);
+  return null;
+}
+
+// Refresh the Microsoft access token. login.live.com is picky about the
+// refresh body, so this is called with and without the scope parameter —
+// whichever yields a token Xbox actually accepts wins.
+async function msRefresh(includeScope) {
+  const refreshToken = Keychain.get("minecraft_refreshtoken");
+  const parts = [
+    "grant_type=refresh_token",
+    "client_id=" + encodeURIComponent(MC_CLIENT_ID),
+    "refresh_token=" + encodeURIComponent(refreshToken),
+  ];
+  if (includeScope) parts.push("scope=" + encodeURIComponent(MC_SCOPE));
+  const req = new Request(URL_MS_TOKEN);
+  req.method = "POST";
+  req.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  req.body = parts.join("&");
+  const res = await send(req);
+  console.log(`msa refresh [scope=${includeScope}] -> ${res.status}: ${res.text.slice(0, 140)}`);
+  // Refresh tokens rotate, so always keep the newest one.
+  if (res.json && res.json.refresh_token) Keychain.set("minecraft_refreshtoken", res.json.refresh_token);
+  return res.json && res.json.access_token ? res.json : null;
 }
 
 async function authenticate() {
   if (!Keychain.contains("minecraft_refreshtoken")) throw new Error("NO_SETUP");
-  const refreshToken = Keychain.get("minecraft_refreshtoken");
 
-  // 1) Microsoft access token from the refresh token. Public client, so
-  // there's no client secret — the client_id goes in the body.
-  const msReq = new Request(URL_MS_TOKEN);
-  msReq.method = "POST";
-  msReq.headers = { "Content-Type": "application/x-www-form-urlencoded" };
-  msReq.body = "grant_type=refresh_token" +
-    "&client_id=" + encodeURIComponent(MC_CLIENT_ID) +
-    "&scope=" + encodeURIComponent(MC_SCOPE) +
-    "&refresh_token=" + encodeURIComponent(refreshToken);
-  const msRes = await send(msReq);
-  const ms = msRes.json || {};
-  if (ms.refresh_token) Keychain.set("minecraft_refreshtoken", ms.refresh_token); // rotation
-  if (!ms.access_token) throw new Error(`MSAUTH ${msRes.status}: ${snippet(msRes.text, 100)}`);
+  // 1+2) Get an Xbox Live token. Prefer the cached Microsoft access token;
+  // if Xbox won't take it, drop it and refresh (trying both body forms).
+  let xblToken = null;
+  const cached = readTokenCache();
+  if (cached && cached.token && cached.exp > Date.now() + 60 * 1000) {
+    xblToken = await tryXblToken(cached.token);
+    if (!xblToken) clearTokenCache(); // stale/revoked — fall through to refresh
+  }
 
-  // 2) Xbox Live user token.
-  const xblToken = await getXblToken(ms.access_token);
+  if (!xblToken) {
+    let refreshed = false;
+    for (const withScope of [true, false]) {
+      const tok = await msRefresh(withScope);
+      if (!tok) continue;
+      refreshed = true;
+      xblToken = await tryXblToken(tok.access_token);
+      if (xblToken) {
+        writeTokenCache({
+          token: tok.access_token,
+          exp: Date.now() + ((Number(tok.expires_in) || 3600) * 1000),
+        });
+        break;
+      }
+    }
+    if (!refreshed) throw new Error("MSAUTH: refresh rejected — re-run Minecraft Auth Setup");
+  }
+
+  if (!xblToken) {
+    const detail = snippet(LAST_XBL ? LAST_XBL.text : "", 80);
+    throw new Error(`XBL ${LAST_XBL ? LAST_XBL.status : 0}${detail ? ": " + detail : " — token rejected"}`);
+  }
 
   // 3) XSTS token for Minecraft services (not xboxlive.com).
   const xstsReq = new Request(URL_XSTS);
@@ -308,7 +355,10 @@ function cachePath() {
   return { fm, path: fm.joinPath(fm.cacheDirectory(), "mc_realm_data.json") };
 }
 function saveCache(data) {
-  try { const { fm, path } = cachePath(); fm.writeString(path, JSON.stringify(data)); } catch (e) {}
+  try {
+    const { fm, path } = cachePath();
+    fm.writeString(path, JSON.stringify(Object.assign({}, data, { ts: Date.now() })));
+  } catch (e) {}
 }
 function loadCache() {
   try {
@@ -328,14 +378,19 @@ async function buildWidget() {
   w.backgroundGradient = grad;
   w.setPadding(10, 11, 10, 11);
 
-  let data = null, failure = null;
+  let data = null, failure = null, stale = false;
   try {
     await authenticate();
     data = await getRealmStatus();
     saveCache(data);
   } catch (e) {
     failure = String(e && e.message ? e.message : e);
-    data = loadCache(); // show last known state if we have one
+    console.log("realm fetch failed: " + failure);
+    // Only fall back to cached data if it's recent, and always flag it.
+    // Otherwise a broken auth chain renders as "0 online", which looks
+    // identical to an empty realm — reporting a failure as real data.
+    const c = loadCache();
+    if (c && c.ts && Date.now() - c.ts < 30 * 60 * 1000) { data = c; stale = true; }
   }
 
   if (!data) {
@@ -412,6 +467,17 @@ async function buildWidget() {
       more.textColor = COLORS.faint;
       more.font = Font.systemFont(9);
     }
+  }
+
+  if (stale) {
+    w.addSpacer(3);
+    const df = new DateFormatter();
+    df.dateFormat = "h:mm a";
+    const st = w.addText(`⚠︎ can't refresh · ${df.string(new Date(data.ts))}`);
+    st.textColor = new Color("#e8b64a");
+    st.font = Font.systemFont(8);
+    st.lineLimit = 1;
+    st.minimumScaleFactor = 0.7;
   }
 
   w.addSpacer();
